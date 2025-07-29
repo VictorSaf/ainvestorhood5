@@ -1,0 +1,139 @@
+version: '3.8'
+
+services:
+  # Aplicația principală AIInvestorHood5
+  ainvestorhood:
+    build: .
+    container_name: ainvestorhood5
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - DB_PATH=/app/data/ainvestorhood.db
+      - OLLAMA_HOST=http://ollama:11434
+    volumes:
+      - ainvestorhood_data:/app/data
+      # Mount pentru Ollama host connection (optional)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - ainvestorhood_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/setup-status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      - ollama
+    labels:
+      - "com.ainvestorhood.service=main"
+      - "com.ainvestorhood.version=1.0"
+
+  # Ollama pentru modele AI locale (optional)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ainvestorhood_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ainvestorhood_network
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - "com.ainvestorhood.service=ollama"
+      - "com.ainvestorhood.version=latest"
+
+  # Nginx pentru reverse proxy și load balancing (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: ainvestorhood_proxy
+    ports:
+      - "8081:80"
+      - "8443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro  # Pentru SSL certificates
+    networks:
+      - ainvestorhood_network
+    restart: unless-stopped
+    depends_on:
+      - ainvestorhood
+    labels:
+      - "com.ainvestorhood.service=proxy"
+
+  # Redis pentru caching (optional pentru scaling)
+  redis:
+    image: redis:7-alpine
+    container_name: ainvestorhood_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ainvestorhood_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "com.ainvestorhood.service=cache"
+
+  # Monitoring cu Portainer (optional)
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: ainvestorhood_portainer
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - ainvestorhood_network
+    restart: unless-stopped
+    labels:
+      - "com.ainvestorhood.service=monitoring"
+
+volumes:
+  # Persistent storage pentru aplicația principală
+  ainvestorhood_data:
+    driver: local
+    labels:
+      - "com.ainvestorhood.volume=data"
+
+  # Storage pentru modelele Ollama
+  ollama_data:
+    driver: local
+    labels:
+      - "com.ainvestorhood.volume=ollama"
+
+  # Storage pentru Redis cache
+  redis_data:
+    driver: local
+    labels:
+      - "com.ainvestorhood.volume=cache"
+
+  # Storage pentru Portainer
+  portainer_data:
+    driver: local
+    labels:
+      - "com.ainvestorhood.volume=monitoring"
+
+networks:
+  ainvestorhood_network:
+    driver: bridge
+    labels:
+      - "com.ainvestorhood.network=main"

@@ -1,0 +1,1 @@
+# Scrapy news collector package

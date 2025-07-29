@@ -1,0 +1,29 @@
+{
+  "name": "ainvestorhood5-server",
+  "version": "1.0.0",
+  "description": "Backend server for AI financial news analyzer",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3",
+    "openai": "^4.20.1",
+    "proxy-agent": "^6.5.0",
+    "puppeteer": "^21.11.0",
+    "rss-parser": "^3.13.0",
+    "socket.io": "^4.8.1",
+    "sqlite3": "^5.1.6",
+    "user-agents": "^1.1.609",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

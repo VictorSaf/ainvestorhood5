@@ -1,0 +1,60 @@
+# Configurație simplificată Docker Compose pentru AIInvestorHood5
+# Pentru cei care vor doar aplicația principală + Ollama
+
+version: '3.8'
+
+services:
+  # Aplicația principală AIInvestorHood5
+  ainvestorhood:
+    build: .
+    container_name: ainvestorhood5_simple
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - DB_PATH=/app/data/ainvestorhood.db
+      - OLLAMA_HOST=http://ollama:11434
+    volumes:
+      - ainvestorhood_data:/app/data
+    networks:
+      - ainvestorhood_network
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/setup-status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Ollama pentru modele AI locale
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_simple
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ainvestorhood_network
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  ainvestorhood_data:
+    driver: local
+  ollama_data:
+    driver: local
+
+networks:
+  ainvestorhood_network:
+    driver: bridge
