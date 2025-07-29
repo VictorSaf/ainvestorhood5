@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import { io } from 'socket.io-client';
+import 'highlight.js/styles/github-dark.css';
 
 const AIDashboard = ({ onClose }) => {
   const [aiConfig, setAiConfig] = useState(null);
@@ -10,12 +15,36 @@ const AIDashboard = ({ onClose }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [modelMetrics, setModelMetrics] = useState(null);
   const [testResult, setTestResult] = useState(null);
+  const [socket, setSocket] = useState(null);
+  const [streamingMessageId, setStreamingMessageId] = useState(null);
   const chatEndRef = useRef(null);
 
   useEffect(() => {
     loadAIConfig();
     loadOllamaModels();
     loadModelMetrics();
+    
+    // Initialize socket for streaming
+    const newSocket = io('http://localhost:8080');
+    setSocket(newSocket);
+    
+    // Listen for streaming chunks
+    newSocket.on('ai-chat-chunk', (data) => {
+      if (data.socketId === newSocket.id) {
+        handleStreamChunk(data.chunk);
+      }
+    });
+    
+    // Listen for completion
+    newSocket.on('ai-chat-complete', (data) => {
+      if (data.socketId === newSocket.id) {
+        handleStreamComplete(data);
+      }
+    });
+    
+    return () => {
+      newSocket.disconnect();
+    };
   }, []);
 
   useEffect(() => {
@@ -94,32 +123,33 @@ const AIDashboard = ({ onClose }) => {
   };
 
   const sendChatMessage = async () => {
-    if (!inputMessage.trim() || !aiConfig) return;
+    if (!inputMessage.trim() || !aiConfig || !socket) return;
 
     const userMessage = { role: 'user', content: inputMessage, timestamp: new Date() };
     setChatMessages(prev => [...prev, userMessage]);
+    const messageText = inputMessage;
     setInputMessage('');
     setIsLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:8080/api/ai-chat', {
-        message: inputMessage,
+      // Use streaming endpoint
+      const response = await axios.post('http://localhost:8080/api/ai-chat-stream', {
+        message: messageText,
         aiProvider: aiConfig.aiProvider,
         model: aiConfig.ollamaModel,
-        customPrompt: aiConfig.customPrompt
+        customPrompt: aiConfig.customPrompt,
+        socketId: socket.id
       }, {
-        timeout: 90000  // 90 seconds timeout for chat requests
+        timeout: 90000
       });
 
-      const aiMessage = {
-        role: 'assistant',
-        content: response.data.response,
-        timestamp: new Date(),
-        processingTime: response.data.processingTime,
-        tokens: response.data.tokens
-      };
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Streaming failed');
+      }
 
-      setChatMessages(prev => [...prev, aiMessage]);
+      // The response will come through WebSocket events
+      // handleStreamChunk and handleStreamComplete will handle it
+      
     } catch (error) {
       const errorMessage = {
         role: 'assistant',
@@ -128,13 +158,53 @@ const AIDashboard = ({ onClose }) => {
         isError: true
       };
       setChatMessages(prev => [...prev, errorMessage]);
-    } finally {
       setIsLoading(false);
     }
   };
 
   const clearChat = () => {
     setChatMessages([]);
+  };
+
+  const handleStreamChunk = (chunk) => {
+    setChatMessages(prev => {
+      const newMessages = [...prev];
+      const lastMessage = newMessages[newMessages.length - 1];
+      
+      if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+        // Update the streaming message
+        lastMessage.content += chunk;
+      } else {
+        // Create new streaming message
+        newMessages.push({
+          role: 'assistant',
+          content: chunk,
+          timestamp: new Date(),
+          streaming: true
+        });
+      }
+      
+      return newMessages;
+    });
+  };
+
+  const handleStreamComplete = (data) => {
+    setChatMessages(prev => {
+      const newMessages = [...prev];
+      const lastMessage = newMessages[newMessages.length - 1];
+      
+      if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+        // Mark as complete and add metadata
+        lastMessage.streaming = false;
+        lastMessage.processingTime = data.processingTime;
+        lastMessage.tokens = data.tokens;
+      }
+      
+      return newMessages;
+    });
+    
+    setIsLoading(false);
+    setStreamingMessageId(null);
   };
 
   const getModelIcon = (provider) => {
@@ -341,7 +411,49 @@ const AIDashboard = ({ onClose }) => {
                           ? 'bg-red-100 text-red-800 border border-red-300'
                           : 'bg-gray-100 text-gray-800'
                     }`}>
-                      <p className="text-sm">{message.content}</p>
+                      {message.role === 'assistant' && !message.isError ? (
+                        <div className="text-sm prose prose-sm max-w-none">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            rehypePlugins={[rehypeHighlight]}
+                            components={{
+                              code: ({node, inline, className, children, ...props}) => {
+                                if (inline) {
+                                  return <code className="bg-gray-200 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>
+                                }
+                                return (
+                                  <pre className="bg-gray-800 text-gray-100 p-3 rounded-lg overflow-x-auto">
+                                    <code className={className} {...props}>
+                                      {children}
+                                    </code>
+                                  </pre>
+                                )
+                              },
+                              blockquote: ({children}) => (
+                                <blockquote className="border-l-4 border-gray-300 pl-4 italic text-gray-600">
+                                  {children}
+                                </blockquote>
+                              ),
+                              h1: ({children}) => <h1 className="text-lg font-bold mb-2">{children}</h1>,
+                              h2: ({children}) => <h2 className="text-base font-bold mb-2">{children}</h2>,
+                              h3: ({children}) => <h3 className="text-sm font-bold mb-1">{children}</h3>,
+                              ul: ({children}) => <ul className="list-disc list-inside space-y-1">{children}</ul>,
+                              ol: ({children}) => <ol className="list-decimal list-inside space-y-1">{children}</ol>,
+                              li: ({children}) => <li className="text-sm">{children}</li>,
+                              p: ({children}) => <p className="mb-2 last:mb-0">{children}</p>,
+                              strong: ({children}) => <strong className="font-semibold">{children}</strong>,
+                              em: ({children}) => <em className="italic">{children}</em>
+                            }}
+                          >
+                            {message.content}
+                          </ReactMarkdown>
+                          {message.streaming && (
+                            <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-1"></span>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm">{message.content}</p>
+                      )}
                       <div className="flex justify-between items-center mt-1 text-xs opacity-75">
                         <span>{message.timestamp.toLocaleTimeString()}</span>
                         {message.processingTime && (

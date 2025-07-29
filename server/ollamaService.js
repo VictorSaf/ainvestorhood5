@@ -117,17 +117,17 @@ Please analyze this financial news article and provide your response in JSON for
     }
   }
 
-  async testModel(model, testPrompt = "Hello, please respond with 'Hello World' in JSON format: {\"response\": \"Hello World\"}") {
+  async testModel(model, testPrompt = "Hello") {
     try {
       const response = await axios.post(`${this.baseUrl}/api/generate`, {
         model: model,
         prompt: testPrompt,
         stream: false,
         options: {
-          num_predict: 50
+          num_predict: 10
         }
       }, {
-        timeout: 15000
+        timeout: 45000
       });
 
       return {
@@ -205,6 +205,108 @@ Please analyze this financial news article and provide your response in JSON for
         tokens: totalTokens
       };
     } catch (error) {
+      return {
+        success: false,
+        error: error.message,
+        response: `Error: ${error.message}`,
+        model: model,
+        tokens: 0
+      };
+    }
+  }
+
+  async streamChatWithModel(model, message, customPrompt = null, onChunk = null) {
+    try {
+      const prompt = customPrompt 
+        ? `${customPrompt}\n\nUser: ${message}\nAssistant:`
+        : `You are a helpful AI assistant. Please respond to the user's message.\n\nUser: ${message}\nAssistant:`;
+
+      const response = await axios.post(`${this.baseUrl}/api/generate`, {
+        model: model,
+        prompt: prompt,
+        stream: true,
+        options: {
+          temperature: 0.7,
+          num_predict: 300,
+          top_k: 40,
+          top_p: 0.9
+        }
+      }, {
+        timeout: 60000,
+        responseType: 'stream'
+      });
+
+      let fullResponse = '';
+      let totalTokens = 0;
+
+      return new Promise((resolve, reject) => {
+        response.data.on('data', (chunk) => {
+          try {
+            const lines = chunk.toString().split('\n').filter(line => line.trim());
+            
+            for (const line of lines) {
+              try {
+                const data = JSON.parse(line);
+                
+                if (data.response) {
+                  fullResponse += data.response;
+                  if (onChunk) {
+                    onChunk(data.response, false);
+                  }
+                }
+                
+                if (data.done) {
+                  // Calculate total tokens
+                  const promptTokens = data.prompt_eval_count || 0;
+                  const responseTokens = data.eval_count || 0;
+                  totalTokens = promptTokens + responseTokens;
+                  
+                  if (onChunk) {
+                    onChunk('', true);
+                  }
+                  
+                  resolve({
+                    success: true,
+                    response: fullResponse,
+                    model: model,
+                    tokens: totalTokens
+                  });
+                  return;
+                }
+              } catch (parseError) {
+                // Skip malformed JSON lines
+                continue;
+              }
+            }
+          } catch (error) {
+            console.error('Error processing chunk:', error);
+          }
+        });
+
+        response.data.on('error', (error) => {
+          console.error('Stream error:', error);
+          reject({
+            success: false,
+            error: error.message,
+            model: model,
+            tokens: 0
+          });
+        });
+
+        response.data.on('end', () => {
+          if (fullResponse === '') {
+            reject({
+              success: false,
+              error: 'No response received',
+              model: model,
+              tokens: 0
+            });
+          }
+        });
+      });
+
+    } catch (error) {
+      console.error('Error in streaming chat:', error);
       return {
         success: false,
         error: error.message,

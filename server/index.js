@@ -412,6 +412,87 @@ app.post('/api/ai-chat', async (req, res) => {
   }
 });
 
+// Stream chat with AI agent
+app.post('/api/ai-chat-stream', async (req, res) => {
+  try {
+    const { message, aiProvider, model, customPrompt, socketId } = req.body;
+    
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+    
+    if (!socketId) {
+      return res.status(400).json({ error: 'Socket ID is required for streaming' });
+    }
+    
+    const startTime = Date.now();
+    let tokens = 0;
+    
+    if (aiProvider === 'ollama') {
+      const OllamaService = require('./ollamaService');
+      const ollama = new OllamaService();
+      
+      const result = await ollama.streamChatWithModel(model, message, customPrompt, (chunk, isDone) => {
+        if (isDone) {
+          // Completion will be handled after the promise resolves
+          // Just notify that streaming is done
+        } else if (chunk) {
+          // Send chunk event
+          io.emit('ai-chat-chunk', { 
+            socketId, 
+            chunk, 
+            timestamp: new Date().toISOString() 
+          });
+        }
+      });
+      
+      tokens = result.tokens || 0;
+      
+      if (!result.success) {
+        throw new Error(result.error || 'Streaming failed');
+      }
+      
+      // Send completion event after we have the result
+      const processingTime = Date.now() - startTime;
+      io.emit('ai-chat-complete', { 
+        socketId, 
+        processingTime, 
+        tokens 
+      });
+      
+    } else {
+      // For OpenAI, we can implement streaming later if needed
+      return res.status(400).json({ error: 'Streaming not yet implemented for OpenAI' });
+    }
+    
+    const processingTime = Date.now() - startTime;
+    
+    // Update AI metrics
+    realTimeMonitor.recordAIRequest(aiProvider, processingTime, tokens);
+    
+    res.json({
+      success: true,
+      message: 'Streaming completed',
+      processingTime,
+      timestamp: new Date().toISOString(),
+      tokens
+    });
+    
+  } catch (error) {
+    console.error('Error in streaming AI chat:', error);
+    
+    // Send error through WebSocket if we have a socketId
+    if (req.body.socketId) {
+      io.emit('ai-chat-error', { 
+        socketId: req.body.socketId, 
+        error: error.message 
+      });
+    }
+    
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Setup monitoring event broadcasting via WebSocket
 realTimeMonitor.on('systemMetrics', (data) => {
   io.emit('systemMetrics', data);
