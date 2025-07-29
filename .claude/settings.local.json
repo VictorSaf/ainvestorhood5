@@ -29,7 +29,10 @@
       "Bash(git remote add:*)",
       "Bash(git branch:*)",
       "Bash(git add:*)",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "Bash(git push:*)",
+      "Bash(docker:*)",
+      "Bash(grep:*)"
     ],
     "deny": []
   }

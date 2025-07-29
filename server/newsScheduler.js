@@ -174,12 +174,19 @@ class NewsScheduler {
           }
 
           // Analyze the article with AI
+          const startTime = Date.now();
           const analysis = await this.aiService.analyzeNewsArticle(newsItem.title, content, newsItem.url);
           if (!analysis) {
             console.log(`Skipping article: ${newsItem.title} - analysis failed`);
             errorCount++;
             continue;
           }
+
+          // Track AI usage for news analysis
+          const processingTime = Date.now() - startTime;
+          const realTimeMonitor = require('./realTimeMonitor');
+          const aiProvider = (await this.database.getSetting('ai_provider')) || 'openai';
+          realTimeMonitor.recordAIRequest(aiProvider, processingTime, analysis.tokens || 0);
 
           // Validate that all required fields are present
           if (!analysis.summary || !analysis.recommendation || !analysis.confidence_score) {

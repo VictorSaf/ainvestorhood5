@@ -8,7 +8,7 @@ WORKDIR /app/client
 COPY client/package*.json ./
 
 # Install dependencies pentru client
-RUN npm ci --only=production
+RUN npm install --only=production
 
 # Copy client source code
 COPY client/ ./
@@ -19,17 +19,31 @@ RUN npm run build
 # Server stage
 FROM node:18-alpine AS server-build
 
-# Install Python și dependințe pentru Scrapy
+# Install Python și dependințe pentru Scrapy + Chromium pentru Puppeteer + SQLite pentru better-sqlite3
 RUN apk add --no-cache \
     python3 \
     py3-pip \
     python3-dev \
     gcc \
+    g++ \
+    make \
     musl-dev \
     libffi-dev \
     openssl-dev \
     libxml2-dev \
-    libxslt-dev
+    libxslt-dev \
+    sqlite-dev \
+    chromium \
+    nss \
+    freetype \
+    freetype-dev \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont
+
+# Set environment variables pentru Puppeteer să nu descarce Chrome
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # Set working directory pentru server
 WORKDIR /app/server
@@ -37,8 +51,11 @@ WORKDIR /app/server
 # Copy package files pentru server
 COPY server/package*.json ./
 
-# Install server dependencies
-RUN npm ci --only=production
+# Configure npm pentru timeout mai mare și install dependencies
+RUN npm config set fetch-timeout 600000 && \
+    npm config set fetch-retry-mintimeout 10000 && \
+    npm config set fetch-retry-maxtimeout 60000 && \
+    npm install --only=production --verbose
 
 # Copy server source code
 COPY server/ ./

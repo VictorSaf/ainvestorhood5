@@ -53,7 +53,7 @@ Please analyze this financial news article and provide your response in JSON for
           num_predict: 500
         }
       }, {
-        timeout: 30000
+        timeout: 60000
       });
 
       let analysis;
@@ -96,6 +96,11 @@ Please analyze this financial news article and provide your response in JSON for
       // Validate confidence score
       result.confidence_score = Math.max(1, Math.min(100, result.confidence_score));
 
+      // Add actual token count from Ollama
+      const promptTokens = response.data.prompt_eval_count || 0;
+      const responseTokens = response.data.eval_count || 0;
+      result.tokens = promptTokens + responseTokens;
+
       return result;
 
     } catch (error) {
@@ -137,6 +142,84 @@ Please analyze this financial news article and provide your response in JSON for
         model: model
       };
     }
+  }
+
+  async getModelDetails(model) {
+    try {
+      const response = await axios.post(`${this.baseUrl}/api/show`, {
+        name: model
+      });
+
+      const modelInfo = response.data;
+      return {
+        name: model,
+        size: modelInfo.details?.parameter_size || 'Unknown',
+        family: modelInfo.details?.family || 'Unknown',
+        format: modelInfo.details?.format || 'Unknown',
+        parameters: modelInfo.details?.parameter_size || 'Unknown',
+        quantization: modelInfo.details?.quantization_level || 'Unknown',
+        modifiedAt: modelInfo.modified_at,
+        digest: modelInfo.digest,
+        template: modelInfo.template
+      };
+    } catch (error) {
+      console.error('Error getting model details:', error);
+      return {
+        name: model,
+        size: 'Unknown',
+        family: 'Unknown',
+        error: error.message
+      };
+    }
+  }
+
+  async chatWithModel(model, message, customPrompt = null) {
+    try {
+      const prompt = customPrompt 
+        ? `${customPrompt}\n\nUser: ${message}\nAssistant:`
+        : `You are a helpful AI assistant. Please respond to the user's message.\n\nUser: ${message}\nAssistant:`;
+
+      const response = await axios.post(`${this.baseUrl}/api/generate`, {
+        model: model,
+        prompt: prompt,
+        stream: false,
+        options: {
+          temperature: 0.7,
+          num_predict: 300,
+          top_k: 40,
+          top_p: 0.9
+        }
+      }, {
+        timeout: 60000
+      });
+
+      // Get actual token count from Ollama response
+      const promptTokens = response.data.prompt_eval_count || 0;
+      const responseTokens = response.data.eval_count || 0;
+      const totalTokens = promptTokens + responseTokens;
+
+      return {
+        success: true,
+        response: response.data.response,
+        model: model,
+        tokens: totalTokens
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message,
+        response: `Error: ${error.message}`,
+        model: model,
+        tokens: 0
+      };
+    }
+  }
+
+  // Estimate token count for local models (approximate calculation)
+  estimateTokens(text) {
+    if (!text) return 0;
+    // Rough approximation: ~4 characters per token for English text
+    return Math.ceil(text.length / 4);
   }
 }
 

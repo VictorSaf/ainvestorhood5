@@ -312,6 +312,106 @@ app.get('/api/ai-config', async (req, res) => {
   }
 });
 
+// Get detailed model information
+app.post('/api/ollama/model-details', async (req, res) => {
+  try {
+    const { model } = req.body;
+    if (!model) {
+      return res.status(400).json({ error: 'Model name is required' });
+    }
+    
+    const OllamaService = require('./ollamaService');
+    const ollama = new OllamaService();
+    
+    const details = await ollama.getModelDetails(model);
+    res.json({ success: true, details });
+  } catch (error) {
+    console.error('Error getting model details:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Get AI metrics
+app.get('/api/ai-metrics', async (req, res) => {
+  try {
+    const metrics = realTimeMonitor.getMetrics('ai');
+    res.json(metrics);
+  } catch (error) {
+    console.error('Error getting AI metrics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Test OpenAI model
+app.post('/api/openai/test', async (req, res) => {
+  try {
+    const apiKey = await db.getSetting('openai_api_key');
+    if (!apiKey) {
+      return res.status(400).json({ error: 'OpenAI API key not configured' });
+    }
+    
+    const AIService = require('./aiService');
+    const aiService = new AIService(apiKey, 'openai');
+    
+    const testResult = await aiService.testOpenAI();
+    res.json(testResult);
+  } catch (error) {
+    console.error('Error testing OpenAI:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Chat with AI agent
+app.post('/api/ai-chat', async (req, res) => {
+  try {
+    const { message, aiProvider, model, customPrompt } = req.body;
+    
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+    
+    const startTime = Date.now();
+    let response;
+    let tokens = 0;
+    
+    if (aiProvider === 'ollama') {
+      const OllamaService = require('./ollamaService');
+      const ollama = new OllamaService();
+      
+      const result = await ollama.chatWithModel(model, message, customPrompt);
+      response = result.response;
+      tokens = result.tokens || 0;
+    } else {
+      const apiKey = await db.getSetting('openai_api_key');
+      if (!apiKey) {
+        return res.status(400).json({ error: 'OpenAI API key not configured' });
+      }
+      
+      const AIService = require('./aiService');
+      const aiService = new AIService(apiKey, 'openai', null, customPrompt);
+      
+      const result = await aiService.chatWithOpenAI(message);
+      response = result.response;
+      tokens = result.tokens?.total_tokens || 0;
+    }
+    
+    const processingTime = Date.now() - startTime;
+    
+    // Update AI metrics
+    realTimeMonitor.recordAIRequest(aiProvider, processingTime, tokens);
+    
+    res.json({
+      response,
+      processingTime,
+      timestamp: new Date().toISOString(),
+      tokens
+    });
+  } catch (error) {
+    console.error('Error in AI chat:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Setup monitoring event broadcasting via WebSocket
 realTimeMonitor.on('systemMetrics', (data) => {
   io.emit('systemMetrics', data);

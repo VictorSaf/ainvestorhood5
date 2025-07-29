@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
+import AIDashboard from './AIDashboard';
 
 const MonitoringDashboard = ({ onClose }) => {
   const [metrics, setMetrics] = useState(null);
   const [logs, setLogs] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
+  const [showAIDashboard, setShowAIDashboard] = useState(false);
   const socketRef = useRef(null);
 
   useEffect(() => {
@@ -529,42 +531,79 @@ const MonitoringDashboard = ({ onClose }) => {
         )}
 
         {/* AI Tab */}
-        {activeTab === 'ai' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">AI Request Stats</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Total Requests</span>
-                  <span className="font-medium">{metrics.ai?.requests?.total || 0}</span>
+        {activeTab === 'ai' && !showAIDashboard && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <h2 className="text-xl font-semibold text-gray-900">AI Monitoring</h2>
+              <button
+                onClick={() => setShowAIDashboard(true)}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center space-x-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <span>Open AI Dashboard</span>
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white rounded-lg shadow p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">AI Request Stats</h3>
+                <div className="space-y-3">
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Total Requests</span>
+                    <span className="font-medium">{metrics.ai?.requests?.total || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Active Requests</span>
+                    <span className="font-medium text-blue-500">{metrics.ai?.requests?.active || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Request Errors</span>
+                    <span className="font-medium text-red-500">{metrics.ai?.requests?.errors || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Avg Response Time</span>
+                    <span className="font-medium">{Math.round(metrics.ai?.avgResponseTime || 0)}ms</span>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Active Requests</span>
-                  <span className="font-medium text-blue-500">{metrics.ai?.requests?.active || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Request Errors</span>
-                  <span className="font-medium text-red-500">{metrics.ai?.requests?.errors || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Avg Response Time</span>
-                  <span className="font-medium">{Math.round(metrics.ai?.avgResponseTime || 0)}ms</span>
+              </div>
+
+              <div className="bg-white rounded-lg shadow p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Token Usage</h3>
+                <div className="space-y-3">
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Tokens Used</span>
+                    <span className="font-medium">{metrics.ai?.tokens?.used?.toLocaleString() || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Estimated Cost</span>
+                    <span className="font-medium">${(metrics.ai?.tokens?.cost || 0).toFixed(4)}</span>
+                  </div>
                 </div>
               </div>
             </div>
+          </div>
+        )}
 
-            <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Token Usage</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Tokens Used</span>
-                  <span className="font-medium">{metrics.ai?.tokens?.used?.toLocaleString() || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Estimated Cost</span>
-                  <span className="font-medium">${(metrics.ai?.tokens?.cost || 0).toFixed(4)}</span>
-                </div>
-              </div>
+        {/* AI Dashboard Integration */}
+        {activeTab === 'ai' && showAIDashboard && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <h2 className="text-xl font-semibold text-gray-900">AI Dashboard</h2>
+              <button
+                onClick={() => setShowAIDashboard(false)}
+                className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center space-x-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                <span>Back to Metrics</span>
+              </button>
+            </div>
+            
+            <div className="bg-white rounded-xl shadow-2xl p-6 max-h-[80vh] overflow-y-auto">
+              <AIDashboard onClose={() => setShowAIDashboard(false)} />
             </div>
           </div>
         )}

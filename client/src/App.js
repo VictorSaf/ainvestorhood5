@@ -6,6 +6,7 @@ import NewsCard from './components/NewsCard';
 import SetupModal from './components/SetupModal';
 import LoadingSpinner from './components/LoadingSpinner';
 import MonitoringDashboard from './components/MonitoringDashboard';
+import AIDashboard from './components/AIDashboard';
 import LiveFeed from './components/LiveFeed';
 import axios from 'axios';
 
@@ -16,6 +17,7 @@ function App() {
   const [hasApiKey, setHasApiKey] = useState(false);
   const [stats, setStats] = useState(null);
   const [showMonitoring, setShowMonitoring] = useState(false);
+  const [showAIDashboard, setShowAIDashboard] = useState(false);
   const [socket, setSocket] = useState(null);
 
   useEffect(() => {
@@ -117,6 +119,7 @@ function App() {
         onRefresh={triggerNewsCollection}
         onSettings={() => setShowSetup(true)}
         onMonitoring={() => setShowMonitoring(true)}
+        onAIDashboard={() => setShowAIDashboard(true)}
       />
       
       <main className="flex-1 pt-16">
@@ -132,6 +135,10 @@ function App() {
             <MonitoringDashboard onClose={() => setShowMonitoring(false)} />
           </div>
         </div>
+      )}
+
+      {showAIDashboard && (
+        <AIDashboard onClose={() => setShowAIDashboard(false)} />
       )}
     </div>
   );

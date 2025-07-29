@@ -217,6 +217,74 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
   async fetchArticleContent(url) {
     return await this.scraper.intelligentScrape(url);
   }
+
+  async testOpenAI() {
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4",
+        messages: [
+          {
+            role: "system",
+            content: "You are a test assistant. Please respond with a simple confirmation message."
+          },
+          {
+            role: "user",
+            content: "Hello, please confirm that OpenAI is working correctly."
+          }
+        ],
+        max_tokens: 50,
+        temperature: 0.2
+      });
+
+      return {
+        success: true,
+        response: response.choices[0].message.content,
+        model: "gpt-4"
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message,
+        model: "gpt-4"
+      };
+    }
+  }
+
+  async chatWithOpenAI(message) {
+    try {
+      const systemPrompt = this.customPrompt || "You are a helpful AI assistant. Please provide clear and informative responses.";
+
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4",
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt
+          },
+          {
+            role: "user",
+            content: message
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.7
+      });
+
+      return {
+        success: true,
+        response: response.choices[0].message.content,
+        model: "gpt-4",
+        tokens: response.usage
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message,
+        response: `Error: ${error.message}`,
+        model: "gpt-4"
+      };
+    }
+  }
 }
 
 module.exports = AIService;

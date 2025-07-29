@@ -601,6 +601,33 @@ class RealTimeMonitor extends EventEmitter {
     
     return filteredLogs.slice(0, limit);
   }
+
+  // Record AI request for dashboard metrics
+  recordAIRequest(provider, processingTime, tokens = 0, error = null) {
+    this.metrics.ai.requests.total++;
+    
+    if (error) {
+      this.metrics.ai.requests.errors++;
+    } else {
+      this.metrics.ai.tokens.used += tokens;
+      this.metrics.ai.tokens.cost += this.calculateTokenCost(tokens);
+      
+      // Update average response time
+      const total = this.metrics.ai.requests.total;
+      const current = this.metrics.ai.avgResponseTime;
+      this.metrics.ai.avgResponseTime = 
+        ((current * (total - 1)) + processingTime) / total;
+    }
+    
+    this.log('info', 'AI_DASHBOARD_REQUEST', {
+      provider,
+      processingTime,
+      tokens,
+      error: error?.message
+    });
+    
+    this.emit('aiMetrics', this.metrics.ai);
+  }
 }
 
 module.exports = new RealTimeMonitor();
