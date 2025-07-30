@@ -69,19 +69,18 @@ function App() {
     if (hasApiKey) {
       loadNews();
       loadStats();
-      
+
       // Connect to monitoring WebSocket
       const newSocket = io('http://localhost:8080');
       setSocket(newSocket);
-      
-      // Refresh news every 30 seconds for testing
+
+      // Refresh stats every 30 seconds
       const interval = setInterval(() => {
-        loadNews();
         loadStats();
-        
+
         // Notify monitoring about frontend refresh
         if (newSocket) {
-          newSocket.emit('frontend-refresh', { articlesCount: news.length });
+          newSocket.emit('frontend-refresh');
         }
       }, 30000);
 
@@ -92,7 +91,7 @@ function App() {
         }
       };
     }
-  }, [hasApiKey, news.length]);
+  }, [hasApiKey]);
 
   const checkSetupStatus = async () => {
     try {
