@@ -1,14 +1,55 @@
 import React, { useState, useEffect } from 'react';
+import { Layout, ConfigProvider, theme } from 'antd';
 import { io } from 'socket.io-client';
 import './App.css';
 import Header from './components/Header';
-import NewsCard from './components/NewsCard';
-import SetupModal from './components/SetupModal';
-import LoadingSpinner from './components/LoadingSpinner';
-import MonitoringDashboard from './components/MonitoringDashboard';
-import AIDashboard from './components/AIDashboard';
-import LiveFeed from './components/LiveFeed';
+import SetupModal from './components/SetupModal.antd';
+import MonitoringDashboard from './components/MonitoringDashboard.antd';
+import AIDashboard from './components/AIDashboard.antd';
+import LiveFeedWithMonitoring from './components/LiveFeedWithMonitoring';
 import axios from 'axios';
+
+const { Content } = Layout;
+
+// Ant Design theme configuration
+const antdTheme = {
+  algorithm: theme.defaultAlgorithm,
+  token: {
+    colorPrimary: '#1890ff',
+    colorSuccess: '#52c41a',
+    colorWarning: '#faad14',
+    colorError: '#f5222d',
+    colorInfo: '#1890ff',
+    borderRadius: 6,
+    wireframe: false,
+  },
+  components: {
+    Layout: {
+      bodyBg: '#f0f2f5',
+      headerBg: '#ffffff',
+      siderBg: '#ffffff',
+    },
+    Card: {
+      borderRadius: 8,
+      boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    },
+    Button: {
+      borderRadius: 6,
+    },
+    Input: {
+      borderRadius: 6,
+    },
+    Select: {
+      borderRadius: 6,
+    },
+    Modal: {
+      borderRadius: 8,
+    },
+    Table: {
+      borderRadius: 6,
+    }
+  }
+};
 
 function App() {
   const [news, setNews] = useState([]);
@@ -109,38 +150,44 @@ function App() {
   };
 
   if (showSetup) {
-    return <SetupModal onComplete={handleSetupComplete} />;
+    return (
+      <ConfigProvider theme={antdTheme}>
+        <SetupModal onComplete={handleSetupComplete} />
+      </ConfigProvider>
+    );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <Header 
-        stats={stats} 
-        onRefresh={triggerNewsCollection}
-        onSettings={() => setShowSetup(true)}
-        onMonitoring={() => setShowMonitoring(true)}
-        onAIDashboard={() => setShowAIDashboard(true)}
-      />
-      
-      <main className="flex-1 pt-16">
-        <LiveFeed 
-          initialNews={news} 
-          hasApiKey={hasApiKey}
+    <ConfigProvider theme={antdTheme}>
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+        <Header 
+          stats={stats} 
+          onRefresh={triggerNewsCollection}
+          onSettings={() => setShowSetup(true)}
+          onMonitoring={() => setShowMonitoring(true)}
+          onAIDashboard={() => setShowAIDashboard(true)}
         />
-      </main>
-      
-      {showMonitoring && (
-        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="w-full h-full">
-            <MonitoringDashboard onClose={() => setShowMonitoring(false)} />
+        
+        <main className="flex-1">
+          <LiveFeedWithMonitoring 
+            initialNews={news} 
+            hasApiKey={hasApiKey}
+          />
+        </main>
+        
+        {showMonitoring && (
+          <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
+            <div className="w-full h-full">
+              <MonitoringDashboard onClose={() => setShowMonitoring(false)} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {showAIDashboard && (
-        <AIDashboard onClose={() => setShowAIDashboard(false)} />
-      )}
-    </div>
+        {showAIDashboard && (
+          <AIDashboard onClose={() => setShowAIDashboard(false)} />
+        )}
+      </div>
+    </ConfigProvider>
   );
 }
 

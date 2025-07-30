@@ -37,15 +37,23 @@ const NewsCard = ({ article, index }) => {
   const formatExactTime = (dateString) => {
     if (!dateString) return 'Unknown';
     
-    const date = new Date(dateString);
-    const day = date.getDate().toString().padStart(2, '0');
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const year = date.getFullYear();
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    const seconds = date.getSeconds().toString().padStart(2, '0');
-    
-    return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    try {
+      const date = new Date(dateString);
+      // Check if date is valid
+      if (isNaN(date.getTime())) return 'Unknown';
+      
+      const day = date.getDate().toString().padStart(2, '0');
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      const year = date.getFullYear();
+      const hours = date.getHours().toString().padStart(2, '0');
+      const minutes = date.getMinutes().toString().padStart(2, '0');
+      const seconds = date.getSeconds().toString().padStart(2, '0');
+      
+      return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    } catch (error) {
+      console.warn('Date parsing error:', error, 'for dateString:', dateString);
+      return 'Unknown';
+    }
   };
 
   const handleSourceClick = (e) => {
@@ -76,9 +84,9 @@ const NewsCard = ({ article, index }) => {
         </div>
         
         <div className="card-meta">
-          <span className="time-ago">
+          <span className="time-ago" title={`Published: ${article.published_at || article.created_at}`}>
             <Clock size={12} />
-            {formatExactTime(article.created_at)}
+            {formatExactTime(article.published_at || article.created_at)}
           </span>
           {article.source_url && (
             <button className="source-btn" onClick={handleSourceClick} title="View Source">

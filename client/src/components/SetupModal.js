@@ -12,6 +12,12 @@ const SetupModal = ({ onComplete }) => {
   const [error, setError] = useState('');
   const [ollamaRunning, setOllamaRunning] = useState(false);
   const [testingModel, setTestingModel] = useState(false);
+  const [tokenLimits, setTokenLimits] = useState({
+    chat: 1000,
+    analysis: 800,
+    streaming: 1000,
+    test: 50
+  });
 
   useEffect(() => {
     fetchOllamaModels();
@@ -31,6 +37,9 @@ const SetupModal = ({ onComplete }) => {
       }
       if (config.customPrompt) {
         setCustomPrompt(config.customPrompt);
+      }
+      if (config.tokenLimits) {
+        setTokenLimits(config.tokenLimits);
       }
     } catch (error) {
       console.error('Error loading config:', error);
@@ -103,7 +112,8 @@ const SetupModal = ({ onComplete }) => {
         aiProvider,
         apiKey: apiKey.trim(),
         ollamaModel: selectedModel,
-        customPrompt: customPrompt.trim() || null
+        customPrompt: customPrompt.trim() || null,
+        tokenLimits
       }, {
         headers: {
           'Content-Type': 'application/json'
@@ -274,6 +284,81 @@ const SetupModal = ({ onComplete }) => {
             <div className="text-xs text-gray-500 mt-1">
               Leave empty to use the default financial analysis prompt
             </div>
+          </div>
+
+          {/* Token Configuration */}
+          <div className="space-y-4 bg-gray-50 p-4 rounded-xl">
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">Token Limits Configuration</h3>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="chatTokens" className="block text-xs font-medium text-gray-600 mb-1">
+                  Chat Responses
+                </label>
+                <input
+                  type="number"
+                  id="chatTokens"
+                  value={tokenLimits.chat}
+                  onChange={(e) => setTokenLimits(prev => ({...prev, chat: parseInt(e.target.value) || 1000}))}
+                  min="100"
+                  max="4000"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={loading}
+                />
+              </div>
+              
+              <div>
+                <label htmlFor="analysisTokens" className="block text-xs font-medium text-gray-600 mb-1">
+                  News Analysis
+                </label>
+                <input
+                  type="number"
+                  id="analysisTokens"
+                  value={tokenLimits.analysis}
+                  onChange={(e) => setTokenLimits(prev => ({...prev, analysis: parseInt(e.target.value) || 800}))}
+                  min="200"
+                  max="2000"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={loading}
+                />
+              </div>
+              
+              <div>
+                <label htmlFor="streamingTokens" className="block text-xs font-medium text-gray-600 mb-1">
+                  Streaming Chat
+                </label>
+                <input
+                  type="number"
+                  id="streamingTokens"
+                  value={tokenLimits.streaming}
+                  onChange={(e) => setTokenLimits(prev => ({...prev, streaming: parseInt(e.target.value) || 1000}))}
+                  min="100"
+                  max="4000"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={loading}
+                />
+              </div>
+              
+              <div>
+                <label htmlFor="testTokens" className="block text-xs font-medium text-gray-600 mb-1">
+                  Model Test
+                </label>
+                <input
+                  type="number"
+                  id="testTokens"
+                  value={tokenLimits.test}
+                  onChange={(e) => setTokenLimits(prev => ({...prev, test: parseInt(e.target.value) || 50}))}
+                  min="5"
+                  max="200"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={loading}
+                />
+              </div>
+            </div>
+            
+            <p className="text-xs text-gray-500">
+              Configure token limits for different AI tasks. Higher values allow longer responses but take more time and resources.
+            </p>
           </div>
 
           {error && (

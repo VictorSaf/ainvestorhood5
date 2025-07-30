@@ -6,7 +6,7 @@ import rehypeHighlight from 'rehype-highlight';
 import { io } from 'socket.io-client';
 import 'highlight.js/styles/github-dark.css';
 
-const AIDashboard = ({ onClose }) => {
+const AIDashboard = ({ onClose, integrated = false }) => {
   const [aiConfig, setAiConfig] = useState(null);
   const [ollamaModels, setOllamaModels] = useState([]);
   const [modelDetails, setModelDetails] = useState(null);
@@ -233,7 +233,7 @@ const AIDashboard = ({ onClose }) => {
 
   if (!aiConfig) {
     return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className={integrated ? "w-full" : "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"}>
         <div className="bg-white rounded-lg p-6">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
           <p className="mt-2 text-gray-600">Loading AI configuration...</p>
@@ -242,29 +242,39 @@ const AIDashboard = ({ onClose }) => {
     );
   }
 
+  const containerClass = integrated 
+    ? "w-full flex flex-col"
+    : "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4";
+    
+  const innerClass = integrated
+    ? "w-full h-full flex flex-col"
+    : "bg-white rounded-xl shadow-2xl w-full max-w-6xl h-full max-h-[90vh] flex flex-col";
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-full max-h-[90vh] flex flex-col">
-        {/* Header */}
-        <div className="flex justify-between items-center p-6 border-b border-gray-200">
-          <div className="flex items-center space-x-3">
-            {getModelIcon(aiConfig.aiProvider)}
-            <div>
-              <h2 className="text-2xl font-bold text-gray-800">AI Dashboard</h2>
-              <p className="text-sm text-gray-600">
-                {aiConfig.aiProvider === 'ollama' ? 'Local Ollama Model' : 'OpenAI GPT-4'}
-              </p>
+    <div className={containerClass}>
+      <div className={innerClass}>
+        {/* Header - only show in popup mode */}
+        {!integrated && (
+          <div className="flex justify-between items-center p-6 border-b border-gray-200">
+            <div className="flex items-center space-x-3">
+              {getModelIcon(aiConfig.aiProvider)}
+              <div>
+                <h2 className="text-2xl font-bold text-gray-800">AI Dashboard</h2>
+                <p className="text-sm text-gray-600">
+                  {aiConfig.aiProvider === 'ollama' ? 'Local Ollama Model' : 'OpenAI GPT-4'}
+                </p>
+              </div>
             </div>
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
+        )}
 
         <div className="flex-1 flex overflow-hidden">
           {/* Left Panel - Model Details & Settings */}

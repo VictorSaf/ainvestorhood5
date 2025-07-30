@@ -42,15 +42,23 @@ const ModernNewsCard = ({ article, index, isNew = false }) => {
   const formatExactTime = (dateString) => {
     if (!dateString) return 'Unknown';
     
-    const date = new Date(dateString);
-    const day = date.getDate().toString().padStart(2, '0');
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const year = date.getFullYear();
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    const seconds = date.getSeconds().toString().padStart(2, '0');
-    
-    return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    try {
+      const date = new Date(dateString);
+      // Check if date is valid
+      if (isNaN(date.getTime())) return 'Unknown';
+      
+      const day = date.getDate().toString().padStart(2, '0');
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      const year = date.getFullYear();
+      const hours = date.getHours().toString().padStart(2, '0');
+      const minutes = date.getMinutes().toString().padStart(2, '0');
+      const seconds = date.getSeconds().toString().padStart(2, '0');
+      
+      return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    } catch (error) {
+      console.warn('Date parsing error:', error, 'for dateString:', dateString);
+      return 'Unknown';
+    }
   };
 
   const handleSourceClick = (e) => {
@@ -103,7 +111,9 @@ const ModernNewsCard = ({ article, index, isNew = false }) => {
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 px-2 py-1 bg-gray-100 rounded-full text-xs text-gray-600">
               <Clock size={10} />
-              <span title={`Salvat în DB: ${article.created_at}`}>{formatExactTime(article.created_at)}</span>
+              <span title={`Published: ${article.published_at || article.created_at}`}>
+                {formatExactTime(article.published_at || article.created_at)}
+              </span>
             </div>
             
             {article.source_url && (
