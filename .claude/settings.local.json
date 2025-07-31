@@ -32,7 +32,10 @@
       "Bash(git reset:*)",
       "Bash(git push:*)",
       "Bash(docker:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(git log:*)",
+      "Bash(git checkout:*)",
+      "Bash(git restore:*)"
     ],
     "deny": []
   }

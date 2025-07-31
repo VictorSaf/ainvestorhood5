@@ -1,7 +1,7 @@
 import React from 'react';
-import { RefreshCw, Settings, TrendingUp, Activity } from 'lucide-react';
+import { TrendingUp } from 'lucide-react';
 
-const Header = ({ stats, onRefresh, onSettings, onMonitoring }) => {
+const Header = ({ stats }) => {
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-xl border-b border-gray-200/50">
       <div className="max-w-7xl mx-auto px-4">
@@ -32,31 +32,6 @@ const Header = ({ stats, onRefresh, onSettings, onMonitoring }) => {
               </div>
             )}
             
-            <div className="flex items-center gap-1">
-              <button 
-                className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-gray-600 hover:text-gray-900"
-                onClick={onRefresh} 
-                title="Refresh News"
-              >
-                <RefreshCw size={20} />
-              </button>
-              
-              <button 
-                className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-gray-600 hover:text-gray-900"
-                onClick={onMonitoring} 
-                title="System Monitor"
-              >
-                <Activity size={20} />
-              </button>
-              
-              <button 
-                className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-gray-600 hover:text-gray-900"
-                onClick={onSettings} 
-                title="Settings"
-              >
-                <Settings size={20} />
-              </button>
-            </div>
           </div>
         </div>
       </div>

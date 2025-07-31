@@ -6,7 +6,6 @@ import {
   Card,
   Row,
   Col,
-  Tabs,
   Statistic,
   Progress,
   Table,
@@ -31,7 +30,6 @@ import {
   ApiOutlined,
   GlobalOutlined,
   BarChartOutlined,
-  ReloadOutlined,
   EyeOutlined,
   ExclamationCircleOutlined,
   CheckCircleOutlined,
@@ -79,7 +77,6 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
   // Monitoring state
   const [metrics, setMetrics] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(new Date());
-  const [activeTab, setActiveTab] = useState('feed');
   const [showDatabaseModal, setShowDatabaseModal] = useState(false);
   const [databaseQueries, setDatabaseQueries] = useState([]);
   const [showApiModal, setShowApiModal] = useState(false);
@@ -108,16 +105,24 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
       setIsConnected(false);
     });
 
-    // Feed events
+    // Reactivez doar încărcarea inițială a articolelor
     newSocket.on('initial-articles', (initialArticles) => {
       console.log(`📰 Received ${initialArticles.length} initial articles`);
       setArticles(initialArticles);
     });
 
+    // Reactivez doar adăugarea de articole noi (nu refresh de articole existente)
     newSocket.on('new-article', (data) => {
       console.log('🆕 New article received:', data.article.title.substring(0, 50));
       
       setArticles(prev => {
+        // Verifică dacă articolul nu există deja
+        const exists = prev.some(article => article.id === data.article.id);
+        if (exists) {
+          console.log('Article already exists, skipping');
+          return prev; // Nu modifica dacă există deja
+        }
+        
         const updated = [data.article, ...prev];
         return updated.slice(0, 50);
       });
@@ -140,32 +145,34 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
       }
     });
 
-    newSocket.on('article-updated', (data) => {
-      console.log('🔄 Article updated:', data.article.title.substring(0, 50));
-      
-      setArticles(prev => 
-        prev.map(article => 
-          article.id === data.article.id ? data.article : article
-        )
-      );
-    });
+    // newSocket.on('article-updated', (data) => {
+    //   console.log('🔄 Article updated - THIS MIGHT CAUSE REFRESH:', data.article.title.substring(0, 50));
+    //   
+    //   setArticles(prev => 
+    //     prev.map(article => 
+    //       article.id === data.article.id ? data.article : article
+    //     )
+    //   );
+    // });
 
-    newSocket.on('processing-status', (data) => {
-      setIsProcessing(data.isProcessing);
-    });
+    // DEZACTIVATE ȘI ACESTEA PENTRU A OPRI ORICE REFRESH
+    // newSocket.on('processing-status', (data) => {
+    //   setIsProcessing(data.isProcessing);
+    // });
 
-    newSocket.on('collection-progress', (data) => {
-      setStats({
-        processed: data.processed || 0,
-        duplicates: data.duplicates || 0,
-        errors: data.errors || 0
-      });
-    });
+    // newSocket.on('collection-progress', (data) => {
+    //   setStats({
+    //     processed: data.processed || 0,
+    //     duplicates: data.duplicates || 0,
+    //     errors: data.errors || 0
+    //   });
+    // });
 
-    newSocket.on('articles-sync', (data) => {
-      console.log(`🔄 Articles synced: ${data.articles.length} articles`);
-      setArticles(data.articles);
-    });
+    // Commented out to prevent full refresh of all cards
+    // newSocket.on('articles-sync', (data) => {
+    //   console.log(`🔄 Articles synced: ${data.articles.length} articles`);
+    //   setArticles(data.articles);
+    // });
 
     // Monitoring events
     newSocket.on('systemMetrics', (data) => {
@@ -223,12 +230,17 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
     };
   }, [hasApiKey]);
 
-  // Update articles when initialNews changes
+  // Setez articolele inițiale din props (FORȚAT)
   useEffect(() => {
-    if (initialNews.length > 0 && articles.length === 0) {
+    console.log('🔄 LiveFeedWithMonitoring useEffect triggered. initialNews:', initialNews);
+    if (initialNews.length > 0) {
+      console.log('🔄 FORCING initial articles from props:', initialNews.length, initialNews);
       setArticles(initialNews);
+      console.log('🔄 Articles state updated!');
+    } else {
+      console.log('❌ No initial news to set');
     }
-  }, [initialNews, articles.length]);
+  }, [initialNews]); // Include initialNews ca dependency
 
   const fetchMetrics = async () => {
     try {
@@ -240,12 +252,6 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
     }
   };
 
-  const handleRefresh = () => {
-    if (socket) {
-      socket.emit('request-refresh');
-    }
-    fetchMetrics();
-  };
 
   const fetchDatabaseQueries = async () => {
     try {
@@ -362,15 +368,6 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
             </Space>
           </div>
 
-          <Button 
-            type="primary" 
-            icon={<Zap size={14} />} 
-            onClick={handleRefresh}
-            style={{ borderRadius: '16px' }}
-            size="small"
-          >
-            Refresh
-          </Button>
         </div>
       </Card>
 
@@ -393,7 +390,7 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
           <div style={{ maxWidth: '800px', margin: '0 auto' }}>
             {articles.map((article, index) => (
               <AntdNewsCard
-                key={`${article.id}-${article.created_at}`}
+                key={article.id}
                 article={article}
                 index={index}
                 isNew={newArticleIds.has(article.id)}
@@ -565,130 +562,17 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <Title level={4} style={{ margin: 0, color: '#1890ff' }}>
-            AIInvestorHood5 - Live Feed & Monitoring
+            AIInvestorHood5 - Live Feed
           </Title>
           <Badge 
             status={isConnected ? "success" : "error"} 
             text={isConnected ? `Connected (${lastUpdate.toLocaleTimeString()})` : "Disconnected"}
           />
         </div>
-        
-        <Space>
-          <Button 
-            icon={<ReloadOutlined />} 
-            onClick={handleRefresh}
-            type="primary"
-            size="small"
-          >
-            Refresh
-          </Button>
-        </Space>
       </Header>
 
       <Content style={{ overflow: 'hidden' }}>
-        <Tabs
-          activeKey={activeTab}
-          onChange={setActiveTab}
-          size="small"
-          style={{ height: '100%' }}
-          items={[
-            {
-              key: 'feed',
-              label: (
-                <span>
-                  <BarChartOutlined />
-                  Live Feed
-                </span>
-              ),
-              children: <FeedTab />
-            },
-            {
-              key: 'overview',
-              label: (
-                <span>
-                  <DashboardOutlined />
-                  Overview
-                </span>
-              ),
-              children: (
-                <div style={{ padding: '16px', height: 'calc(100vh - 112px)', overflow: 'auto' }}>
-                  <OverviewTab />
-                </div>
-              )
-            },
-            {
-              key: 'system',
-              label: (
-                <span>
-                  <MonitorOutlined />
-                  System
-                </span>
-              ),
-              children: (
-                <div style={{ padding: '16px', height: 'calc(100vh - 112px)', overflow: 'auto' }}>
-                  <Alert
-                    message="System Monitoring"
-                    description="Real-time system performance metrics and resource usage."
-                    type="info"
-                    showIcon
-                    style={{ marginBottom: '16px' }}
-                  />
-                  <OverviewTab />
-                </div>
-              )
-            },
-            {
-              key: 'api',
-              label: (
-                <span>
-                  <ApiOutlined />
-                  API Requests
-                </span>
-              ),
-              children: (
-                <div style={{ padding: '16px', height: 'calc(100vh - 112px)', overflow: 'auto' }}>
-                  <Button 
-                    type="primary" 
-                    icon={<EyeOutlined />}
-                    onClick={() => {
-                      fetchApiRequests();
-                      setShowApiModal(true);
-                    }}
-                    style={{ marginBottom: '16px' }}
-                  >
-                    View All API Requests
-                  </Button>
-                  <OverviewTab />
-                </div>
-              )
-            },
-            {
-              key: 'logs',
-              label: (
-                <span>
-                  <BugOutlined />
-                  HTTP Logs
-                </span>
-              ),
-              children: (
-                <div style={{ padding: '16px', height: 'calc(100vh - 112px)', overflow: 'auto' }}>
-                  <Button 
-                    type="primary" 
-                    icon={<EyeOutlined />}
-                    onClick={() => {
-                      fetchHttpLogs();
-                      setShowLogsModal(true);
-                    }}
-                    style={{ marginBottom: '16px' }}
-                  >
-                    View HTTP Activity Logs
-                  </Button>
-                  <OverviewTab />
-                </div>
-              )
-            }
-          ]}
-        />
+        <FeedTab />
       </Content>
 
       {/* Database Queries Modal */}

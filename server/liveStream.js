@@ -10,11 +10,15 @@ class LiveStreamService {
     this.io = io;
     console.log('📡 Live stream service initialized');
 
+    // Încarcă articolele la inițializare - FORȚAT
+    this.loadArticlesFromDatabase();
+
     io.on('connection', (socket) => {
       this.connectedClients.add(socket.id);
       console.log(`🔗 Client connected: ${socket.id} (${this.connectedClients.size} total)`);
 
       // Send recent articles to new client
+      console.log(`📰 Sending ${this.recentArticles.length} recent articles to new client`);
       socket.emit('initial-articles', this.recentArticles);
 
       // Handle client requests
@@ -27,6 +31,20 @@ class LiveStreamService {
         console.log(`❌ Client disconnected: ${socket.id} (${this.connectedClients.size} total)`);
       });
     });
+  }
+
+  // Metodă dedicată pentru încărcarea articolelor din baza de date
+  async loadArticlesFromDatabase() {
+    try {
+      const Database = require('./database');
+      const db = new Database();
+      const dbArticles = await db.getRecentArticles(this.maxRecentArticles);
+      this.recentArticles = dbArticles;
+      console.log(`📰 LiveStream: FORȚAT loaded ${this.recentArticles.length} articles from database`);
+    } catch (error) {
+      console.error('Error FORȚAT loading articles for LiveStream:', error);
+      this.recentArticles = [];
+    }
   }
 
   // Broadcast new article to all connected clients
@@ -100,8 +118,22 @@ class LiveStreamService {
   }
 
   // Sync articles from database
-  syncArticles(articles) {
-    this.recentArticles = articles.slice(0, this.maxRecentArticles);
+  async syncArticles(articles) {
+    if (articles) {
+      this.recentArticles = articles.slice(0, this.maxRecentArticles);
+    } else {
+      // Dacă nu sunt furnizate articole, încarcă din baza de date
+      try {
+        const Database = require('./database');
+        const db = new Database();
+        const dbArticles = await db.getRecentArticles(this.maxRecentArticles);
+        this.recentArticles = dbArticles;
+        console.log(`📰 LiveStream: Loaded ${this.recentArticles.length} articles from database`);
+      } catch (error) {
+        console.error('Error loading articles for LiveStream:', error);
+        this.recentArticles = [];
+      }
+    }
     
     if (this.io) {
       this.io.emit('articles-sync', {

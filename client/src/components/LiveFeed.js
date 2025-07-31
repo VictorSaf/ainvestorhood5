@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
-import { Activity, Zap, TrendingUp, AlertCircle } from 'lucide-react';
+import { Activity, Zap, TrendingUp, AlertCircle, RefreshCw, Settings } from 'lucide-react';
 import ModernNewsCard from './ModernNewsCard';
 
-const LiveFeed = ({ initialNews = [], hasApiKey }) => {
+const LiveFeed = ({ initialNews = [], hasApiKey, stats, onRefresh, onSettings, onMonitoring, onAIDashboard }) => {
   const [articles, setArticles] = useState(initialNews);
   const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [newArticleIds, setNewArticleIds] = useState(new Set());
-  const [stats, setStats] = useState({ processed: 0, duplicates: 0, errors: 0 });
+  const [processingStats, setProcessingStats] = useState({ processed: 0, duplicates: 0, errors: 0 });
   const feedRef = useRef(null);
 
   useEffect(() => {
@@ -28,10 +28,11 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
       setIsConnected(false);
     });
 
-    // Handle initial articles
+    // Handle initial articles - FORȚAT
     newSocket.on('initial-articles', (initialArticles) => {
-      console.log(`📰 Received ${initialArticles.length} initial articles`);
+      console.log(`📰 WEBSOCKET: Received ${initialArticles.length} initial articles:`, initialArticles);
       setArticles(initialArticles);
+      console.log('📰 WEBSOCKET: Articles state updated via WebSocket!');
     });
 
     // Handle new articles
@@ -84,7 +85,7 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
 
     // Handle collection progress
     newSocket.on('collection-progress', (data) => {
-      setStats({
+      setProcessingStats({
         processed: data.processed || 0,
         duplicates: data.duplicates || 0,
         errors: data.errors || 0
@@ -106,18 +107,18 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
     };
   }, [hasApiKey]);
 
-  // Update articles when initialNews changes
+  // Update articles when initialNews changes - WITH DEBUGGING
   useEffect(() => {
-    if (initialNews.length > 0 && articles.length === 0) {
+    console.log('🔄 LiveFeed useEffect triggered. initialNews:', initialNews);
+    if (initialNews.length > 0) {
+      console.log('🔄 Setting articles from initialNews:', initialNews.length, initialNews);
       setArticles(initialNews);
+      console.log('🔄 LiveFeed articles state updated!');
+    } else {
+      console.log('❌ LiveFeed: No initial news to set');
     }
-  }, [initialNews, articles.length]);
+  }, [initialNews]);
 
-  const handleRefresh = () => {
-    if (socket) {
-      socket.emit('request-refresh');
-    }
-  };
 
   if (!hasApiKey) {
     return (
@@ -134,8 +135,29 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
       <div className="sticky top-0 bg-white/95 backdrop-blur-xl border-b border-gray-200/50 p-4 z-50">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3 flex-1">
-            <Activity size={20} className="text-blue-600" />
-            <h2 className="text-lg font-bold text-gray-900">Live Financial News</h2>
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl">
+                <TrendingUp size={20} className="text-white" />
+              </div>
+              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+                AIInvestorHood
+              </h1>
+            </div>
+            
+            {stats && (
+              <div className="hidden md:flex items-center gap-4 px-4 py-2 bg-gray-50 rounded-full">
+                <div className="flex flex-col items-center">
+                  <span className="text-lg font-bold text-gray-900">{stats.totalArticles}</span>
+                  <span className="text-xs text-gray-500 uppercase tracking-wide">News</span>
+                </div>
+                <div className="w-px h-8 bg-gray-300"></div>
+                <div className="flex flex-col items-center">
+                  <span className="text-lg font-bold text-gray-900">{stats.averageConfidence}%</span>
+                  <span className="text-xs text-gray-500 uppercase tracking-wide">Confidence</span>
+                </div>
+              </div>
+            )}
+            
             <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${
               isConnected 
                 ? 'bg-emerald-100 text-emerald-700' 
@@ -158,25 +180,43 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1 text-sm text-gray-600 font-medium">
               <TrendingUp size={14} className="text-blue-500" />
-              <span>{stats.processed} new</span>
+              <span>{processingStats.processed} new</span>
             </div>
             <div className="text-sm text-gray-600 font-medium">
-              <span>{stats.duplicates} filtered</span>
+              <span>{processingStats.duplicates} filtered</span>
             </div>
-            {stats.errors > 0 && (
+            {processingStats.errors > 0 && (
               <div className="text-sm text-red-600 font-medium">
-                <span>{stats.errors} errors</span>
+                <span>{processingStats.errors} errors</span>
               </div>
             )}
           </div>
 
-          <button 
-            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-full text-sm font-medium transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-emerald-500/25"
-            onClick={handleRefresh}
-          >
-            <Zap size={16} />
-            <span>Refresh</span>
-          </button>
+          <div className="flex items-center gap-1">
+            <button 
+              className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-gray-600 hover:text-gray-900"
+              onClick={onRefresh} 
+              title="Refresh News"
+            >
+              <RefreshCw size={20} />
+            </button>
+            
+            <button 
+              className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-gray-600 hover:text-gray-900"
+              onClick={onMonitoring} 
+              title="System Monitor"
+            >
+              <Activity size={20} />
+            </button>
+            
+            <button 
+              className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-gray-600 hover:text-gray-900"
+              onClick={onSettings} 
+              title="Settings"
+            >
+              <Settings size={20} />
+            </button>
+          </div>
         </div>
       </div>
 

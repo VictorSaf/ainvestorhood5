@@ -2,11 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Layout, ConfigProvider, theme } from 'antd';
 import { io } from 'socket.io-client';
 import './App.css';
-import Header from './components/Header';
 import SetupModal from './components/SetupModal.antd';
 import MonitoringDashboard from './components/MonitoringDashboard.antd';
 import AIDashboard from './components/AIDashboard.antd';
-import LiveFeedWithMonitoring from './components/LiveFeedWithMonitoring';
+import LiveFeed from './components/LiveFeed';
 import axios from 'axios';
 
 const { Content } = Layout;
@@ -113,8 +112,9 @@ function App() {
       setLoading(true);
       console.log('🔄 Loading news...');
       const response = await axios.get('http://localhost:8080/api/news?limit=50');
-      console.log(`📰 Loaded ${response.data.length} articles`);
+      console.log(`📰 Loaded ${response.data.length} articles:`, response.data);
       setNews(response.data);
+      console.log('📰 News state updated with:', response.data.length, 'articles');
     } catch (error) {
       console.error('Error loading news:', error);
     } finally {
@@ -159,20 +159,15 @@ function App() {
   return (
     <ConfigProvider theme={antdTheme}>
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-        <Header 
-          stats={stats} 
+        <LiveFeed 
+          initialNews={news} 
+          hasApiKey={hasApiKey}
+          stats={stats}
           onRefresh={triggerNewsCollection}
           onSettings={() => setShowSetup(true)}
           onMonitoring={() => setShowMonitoring(true)}
           onAIDashboard={() => setShowAIDashboard(true)}
         />
-        
-        <main className="flex-1">
-          <LiveFeedWithMonitoring 
-            initialNews={news} 
-            hasApiKey={hasApiKey}
-          />
-        </main>
         
         {showMonitoring && (
           <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">

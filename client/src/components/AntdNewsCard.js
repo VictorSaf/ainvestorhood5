@@ -30,10 +30,10 @@ const AntdNewsCard = ({ article, index, isNew = false }) => {
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
-    // Animate card entrance
-    const timer = setTimeout(() => setIsVisible(true), index * 100);
+    // Animate card entrance - FĂRĂ DEPENDENCY PE INDEX
+    const timer = setTimeout(() => setIsVisible(true), 100);
     return () => clearTimeout(timer);
-  }, [index]);
+  }, []); // Fără dependencies pentru a evita re-render-uri
 
   const getRecommendationIcon = (recommendation) => {
     switch (recommendation) {
