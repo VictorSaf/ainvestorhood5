@@ -1,56 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { Layout, ConfigProvider, theme } from 'antd';
 import { io } from 'socket.io-client';
-import './App.css';
 import SetupModal from './components/SetupModal.antd';
 import MonitoringDashboard from './components/MonitoringDashboard.antd';
 import AIDashboard from './components/AIDashboard.antd';
-import LiveFeed from './components/LiveFeed';
+import LiveFeedAntd from './components/LiveFeedAntd';
+import { antdTheme } from './theme/theme';
+import { processThemeAlgorithm } from './theme/themeUtils';
 import axios from 'axios';
 
 const { Content } = Layout;
 
-// Ant Design theme configuration
-const antdTheme = {
-  algorithm: theme.defaultAlgorithm,
-  token: {
-    colorPrimary: '#1890ff',
-    colorSuccess: '#52c41a',
-    colorWarning: '#faad14',
-    colorError: '#f5222d',
-    colorInfo: '#1890ff',
-    borderRadius: 6,
-    wireframe: false,
-  },
-  components: {
-    Layout: {
-      bodyBg: '#f0f2f5',
-      headerBg: '#ffffff',
-      siderBg: '#ffffff',
-    },
-    Card: {
-      borderRadius: 8,
-      boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-    },
-    Button: {
-      borderRadius: 6,
-    },
-    Input: {
-      borderRadius: 6,
-    },
-    Select: {
-      borderRadius: 6,
-    },
-    Modal: {
-      borderRadius: 8,
-    },
-    Table: {
-      borderRadius: 6,
-    }
-  }
-};
+// Tema este acum importată din fișierul dedicat theme/theme.js
+// Pentru a edita tema, folosește Theme Editor de la ant.design
 
 function App() {
+  // Procesează tema pentru a converti string algorithm în funcție
+  const processedTheme = processThemeAlgorithm(antdTheme, theme);
   const [news, setNews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showSetup, setShowSetup] = useState(false);
@@ -157,9 +123,9 @@ function App() {
   }
 
   return (
-    <ConfigProvider theme={antdTheme}>
+    <ConfigProvider theme={processedTheme}>
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-        <LiveFeed 
+        <LiveFeedAntd 
           initialNews={news} 
           hasApiKey={hasApiKey}
           stats={stats}
