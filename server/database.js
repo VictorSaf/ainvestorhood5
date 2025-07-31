@@ -81,6 +81,18 @@ class DatabaseWrapper {
     });
   }
 
+  deleteSetting(key) {
+    return new Promise((resolve, reject) => {
+      this.db.run('DELETE FROM settings WHERE key = ?', [key], function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this.changes);
+        }
+      });
+    });
+  }
+
   // News articles methods
   addArticle(article) {
     return new Promise((resolve, reject) => {

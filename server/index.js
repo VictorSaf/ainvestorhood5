@@ -493,6 +493,73 @@ app.post('/api/ai-chat-stream', async (req, res) => {
   }
 });
 
+// Theme management endpoints
+app.get('/api/theme', async (req, res) => {
+  try {
+    const theme = await db.getSetting('currentTheme');
+    if (theme) {
+      res.json(JSON.parse(theme));
+    } else {
+      // Return default theme if none exists
+      const defaultTheme = require('../client/src/theme/defaultTheme.json');
+      res.json(defaultTheme);
+    }
+  } catch (error) {
+    console.error('Error fetching theme:', error);
+    res.status(500).json({ error: 'Failed to fetch theme' });
+  }
+});
+
+app.post('/api/theme', async (req, res) => {
+  try {
+    const themeData = req.body;
+    
+    // Validate theme data
+    if (!themeData || !themeData.name || !themeData.version) {
+      return res.status(400).json({ error: 'Invalid theme data' });
+    }
+    
+    // Save theme to database
+    await db.setSetting('currentTheme', JSON.stringify(themeData));
+    await db.setSetting('themeLastUpdated', new Date().toISOString());
+    
+    // Emit theme update to all connected clients
+    io.emit('theme-updated', themeData);
+    
+    res.json({ 
+      success: true, 
+      message: 'Theme saved successfully',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error saving theme:', error);
+    res.status(500).json({ error: 'Failed to save theme' });
+  }
+});
+
+app.delete('/api/theme', async (req, res) => {
+  try {
+    // Reset to default theme
+    await db.deleteSetting('currentTheme');
+    await db.deleteSetting('themeLastUpdated');
+    
+    // Load default theme
+    const defaultTheme = require('../client/src/theme/defaultTheme.json');
+    
+    // Emit theme reset to all connected clients
+    io.emit('theme-updated', defaultTheme);
+    
+    res.json({ 
+      success: true, 
+      message: 'Theme reset to default',
+      theme: defaultTheme
+    });
+  } catch (error) {
+    console.error('Error resetting theme:', error);
+    res.status(500).json({ error: 'Failed to reset theme' });
+  }
+});
+
 // Setup monitoring event broadcasting via WebSocket
 realTimeMonitor.on('systemMetrics', (data) => {
   io.emit('systemMetrics', data);
