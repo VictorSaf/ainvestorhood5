@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
-import { Activity, Zap, TrendingUp, AlertCircle, RefreshCw, Settings } from 'lucide-react';
-import ModernNewsCard from './ModernNewsCard';
+import { Activity, TrendingUp, AlertCircle, RefreshCw } from 'lucide-react';
+import NewsCard from './NewsCard';
 
-const LiveFeed = ({ initialNews = [], hasApiKey, stats, onRefresh, onSettings, onMonitoring, onAIDashboard }) => {
+const LiveFeed = ({ initialNews = [], hasApiKey, onRefresh, onMonitoring, onAIDashboard }) => {
   const [articles, setArticles] = useState(initialNews);
   const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -144,20 +144,6 @@ const LiveFeed = ({ initialNews = [], hasApiKey, stats, onRefresh, onSettings, o
               </h1>
             </div>
             
-            {stats && (
-              <div className="hidden md:flex items-center gap-4 px-4 py-2 bg-gray-50 rounded-full">
-                <div className="flex flex-col items-center">
-                  <span className="text-lg font-bold text-gray-900">{stats.totalArticles}</span>
-                  <span className="text-xs text-gray-500 uppercase tracking-wide">News</span>
-                </div>
-                <div className="w-px h-8 bg-gray-300"></div>
-                <div className="flex flex-col items-center">
-                  <span className="text-lg font-bold text-gray-900">{stats.averageConfidence}%</span>
-                  <span className="text-xs text-gray-500 uppercase tracking-wide">Confidence</span>
-                </div>
-              </div>
-            )}
-            
             <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${
               isConnected 
                 ? 'bg-emerald-100 text-emerald-700' 
@@ -208,14 +194,6 @@ const LiveFeed = ({ initialNews = [], hasApiKey, stats, onRefresh, onSettings, o
             >
               <Activity size={20} />
             </button>
-            
-            <button 
-              className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-gray-600 hover:text-gray-900"
-              onClick={onSettings} 
-              title="Settings"
-            >
-              <Settings size={20} />
-            </button>
           </div>
         </div>
       </div>
@@ -236,7 +214,7 @@ const LiveFeed = ({ initialNews = [], hasApiKey, stats, onRefresh, onSettings, o
         ) : (
           <div className="space-y-0">
             {articles.map((article, index) => (
-              <ModernNewsCard
+              <NewsCard
                 key={`${article.id}-${article.created_at}`}
                 article={article}
                 index={index}

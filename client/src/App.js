@@ -1,27 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, ConfigProvider, theme } from 'antd';
 import { io } from 'socket.io-client';
-import SetupModal from './components/SetupModal.antd';
-import MonitoringDashboard from './components/MonitoringDashboard.antd';
-import AIDashboard from './components/AIDashboard.antd';
-import LiveFeedAntd from './components/LiveFeedAntd';
-import { antdTheme } from './theme/theme';
-import { processThemeAlgorithm } from './theme/themeUtils';
+import SetupModal from './components/SetupModal';
+import MonitoringDashboard from './components/MonitoringDashboard';
+import AIDashboard from './components/AIDashboard';
+import LiveFeed from './components/LiveFeed';
+import { Layout } from './components/ui';
 import axios from 'axios';
 
-const { Content } = Layout;
-
-// Tema este acum importată din fișierul dedicat theme/theme.js
-// Pentru a edita tema, folosește Theme Editor de la ant.design
-
 function App() {
-  // Procesează tema pentru a converti string algorithm în funcție
-  const processedTheme = processThemeAlgorithm(antdTheme, theme);
   const [news, setNews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showSetup, setShowSetup] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
-  const [stats, setStats] = useState(null);
   const [showMonitoring, setShowMonitoring] = useState(false);
   const [showAIDashboard, setShowAIDashboard] = useState(false);
   const [socket, setSocket] = useState(null);
@@ -33,15 +23,14 @@ function App() {
   useEffect(() => {
     if (hasApiKey) {
       loadNews();
-      loadStats();
 
       // Connect to monitoring WebSocket
       const newSocket = io('http://localhost:8080');
       setSocket(newSocket);
 
-      // Refresh stats every 30 seconds
+      // Refresh news every 30 seconds
       const interval = setInterval(() => {
-        loadStats();
+        loadNews();
 
         // Notify monitoring about frontend refresh
         if (newSocket) {
@@ -88,14 +77,6 @@ function App() {
     }
   };
 
-  const loadStats = async () => {
-    try {
-      const response = await axios.get('http://localhost:8080/api/stats');
-      setStats(response.data);
-    } catch (error) {
-      console.error('Error loading stats:', error);
-    }
-  };
 
   const handleSetupComplete = () => {
     setShowSetup(false);
@@ -107,7 +88,6 @@ function App() {
       await axios.post('http://localhost:8080/api/collect-news');
       setTimeout(() => {
         loadNews();
-        loadStats();
       }, 2000);
     } catch (error) {
       console.error('Error triggering news collection:', error);
@@ -115,39 +95,31 @@ function App() {
   };
 
   if (showSetup) {
-    return (
-      <ConfigProvider theme={antdTheme}>
-        <SetupModal onComplete={handleSetupComplete} />
-      </ConfigProvider>
-    );
+    return <SetupModal onComplete={handleSetupComplete} />;
   }
 
   return (
-    <ConfigProvider theme={processedTheme}>
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-        <LiveFeedAntd 
-          initialNews={news} 
-          hasApiKey={hasApiKey}
-          stats={stats}
-          onRefresh={triggerNewsCollection}
-          onSettings={() => setShowSetup(true)}
-          onMonitoring={() => setShowMonitoring(true)}
-          onAIDashboard={() => setShowAIDashboard(true)}
-        />
-        
-        {showMonitoring && (
-          <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
-            <div className="w-full h-full">
-              <MonitoringDashboard onClose={() => setShowMonitoring(false)} />
-            </div>
+    <Layout className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+      <LiveFeed 
+        initialNews={news} 
+        hasApiKey={hasApiKey}
+        onRefresh={triggerNewsCollection}
+        onMonitoring={() => setShowMonitoring(true)}
+        onAIDashboard={() => setShowAIDashboard(true)}
+      />
+      
+      {showMonitoring && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="w-full h-full">
+            <MonitoringDashboard onClose={() => setShowMonitoring(false)} />
           </div>
-        )}
+        </div>
+      )}
 
-        {showAIDashboard && (
-          <AIDashboard onClose={() => setShowAIDashboard(false)} />
-        )}
-      </div>
-    </ConfigProvider>
+      {showAIDashboard && (
+        <AIDashboard onClose={() => setShowAIDashboard(false)} />
+      )}
+    </Layout>
   );
 }
 

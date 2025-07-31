@@ -48,7 +48,7 @@ import {
   Legend,
   Filler,
 } from 'chart.js';
-import AntdNewsCard from './AntdNewsCard';
+import NewsCard from './NewsCard';
 
 // Register Chart.js components
 ChartJS.register(
@@ -389,7 +389,7 @@ const LiveFeedWithMonitoring = ({ initialNews = [], hasApiKey }) => {
         ) : (
           <div style={{ maxWidth: '800px', margin: '0 auto' }}>
             {articles.map((article, index) => (
-              <AntdNewsCard
+              <NewsCard
                 key={article.id}
                 article={article}
                 index={index}

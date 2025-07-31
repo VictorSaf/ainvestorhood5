@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
-import AIDashboard from './AIDashboard';
+import AIConfigurationTab from './AIConfigurationTab';
+import ThemeEditor from './ThemeEditor';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -85,7 +86,6 @@ const MonitoringDashboard = ({ onClose }) => {
   const [logs, setLogs] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
-  const [showAIDashboard, setShowAIDashboard] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [streamingActive, setStreamingActive] = useState(false);
   const [chartData, setChartData] = useState({
@@ -407,7 +407,7 @@ const MonitoringDashboard = ({ onClose }) => {
       <div className="bg-white border-b flex-shrink-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex space-x-8">
-            {['overview', 'system', 'http', 'websocket', 'database', 'ai', 'scrapy', 'api', 'logs'].map((tab) => (
+            {['overview', 'system', 'http', 'websocket', 'database', 'ai', 'scrapy', 'api', 'logs', 'theme'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -970,87 +970,7 @@ const MonitoringDashboard = ({ onClose }) => {
 
         {/* AI Tab */}
         {activeTab === 'ai' && (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center">
-              <h2 className="text-xl font-semibold text-gray-900">AI Monitoring & Dashboard</h2>
-              <div className="flex space-x-2">
-                <button
-                  onClick={() => setShowAIDashboard(false)}
-                  className={`px-4 py-2 rounded-lg transition-colors flex items-center space-x-2 ${
-                    !showAIDashboard 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                  </svg>
-                  <span>Metrics</span>
-                </button>
-                <button
-                  onClick={() => setShowAIDashboard(true)}
-                  className={`px-4 py-2 rounded-lg transition-colors flex items-center space-x-2 ${
-                    showAIDashboard 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                  </svg>
-                  <span>Dashboard</span>
-                </button>
-              </div>
-            </div>
-            
-            {/* AI Metrics View */}
-            {!showAIDashboard && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-white rounded-lg shadow p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">AI Request Stats</h3>
-                  <div className="space-y-3">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Total Requests</span>
-                      <span className="font-medium">{metrics.ai?.requests?.total || 0}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Active Requests</span>
-                      <span className="font-medium text-blue-500">{metrics.ai?.requests?.active || 0}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Request Errors</span>
-                      <span className="font-medium text-red-500">{metrics.ai?.requests?.errors || 0}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Avg Response Time</span>
-                      <span className="font-medium">{Math.round(metrics.ai?.avgResponseTime || 0)}ms</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-white rounded-lg shadow p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Token Usage</h3>
-                  <div className="space-y-3">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Tokens Used</span>
-                      <span className="font-medium">{metrics.ai?.tokens?.used?.toLocaleString() || 0}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Estimated Cost</span>
-                      <span className="font-medium">${(metrics.ai?.tokens?.cost || 0).toFixed(4)}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* AI Dashboard Integration */}
-            {showAIDashboard && (
-              <div className="bg-white rounded-lg shadow-lg">
-                <AIDashboard onClose={() => setShowAIDashboard(false)} integrated={true} />
-              </div>
-            )}
-          </div>
+          <AIConfigurationTab metrics={metrics} />
         )}
 
 
@@ -1417,6 +1337,11 @@ const MonitoringDashboard = ({ onClose }) => {
               </div>
             )}
           </div>
+        )}
+
+        {/* Theme Tab */}
+        {activeTab === 'theme' && (
+          <ThemeEditor />
         )}
       </div>
 
