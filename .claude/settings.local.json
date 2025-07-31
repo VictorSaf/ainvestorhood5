@@ -38,7 +38,9 @@
       "Bash(git restore:*)",
       "Bash(git commit:*)",
       "Bash(npm run build:*)",
-      "Bash(npm run server:*)"
+      "Bash(npm run server:*)",
+      "Bash(npm start)",
+      "Bash(PORT=3001 npm start)"
     ],
     "deny": []
   }
