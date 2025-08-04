@@ -144,6 +144,9 @@ class NewsScheduler {
 
   async collectWithLegacyMethod() {
     try {
+      // Notify monitoring system about RSS collection start
+      const realTimeMonitor = require('./realTimeMonitor');
+      realTimeMonitor.onScrapyStart(); // Reusing scrapy monitoring for RSS
       
       const newsResults = await this.aiService.searchFinancialNews();
       console.log(`Found ${newsResults.length} potential news articles`);
@@ -259,9 +262,23 @@ class NewsScheduler {
       // Sync all articles from database to WebSocket clients
       await liveStream.syncArticles();
 
+      // Notify monitoring system about RSS collection completion
+      realTimeMonitor.onScrapyEnd(processedCount, errorCount);
+      
+      return {
+        processed: processedCount,
+        duplicates: duplicateCount,
+        errors: errorCount,
+        method: 'RSS'
+      };
+
     } catch (error) {
       console.error('Error in news collection:', error);
       liveStream.broadcastProcessingStatus(false);
+      
+      // Notify monitoring system about RSS collection failure
+      const realTimeMonitor = require('./realTimeMonitor');
+      realTimeMonitor.onScrapyEnd(0, 1);
     }
   }
 

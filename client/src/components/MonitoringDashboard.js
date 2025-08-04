@@ -252,9 +252,9 @@ const MonitoringDashboard = ({ onClose }) => {
     };
   }, []);
 
-  // Fetch Scrapy sources when tab is active
+  // Fetch RSS sources when tab is active
   useEffect(() => {
-    if (activeTab === 'scrapy') {
+    if (activeTab === 'rss') {
       fetchScrapySources();
     }
   }, [activeTab]);
@@ -407,7 +407,7 @@ const MonitoringDashboard = ({ onClose }) => {
       <div className="bg-white border-b flex-shrink-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex space-x-8">
-            {['overview', 'system', 'http', 'websocket', 'database', 'ai', 'scrapy', 'api', 'logs', 'theme'].map((tab) => (
+            {['overview', 'system', 'http', 'websocket', 'database', 'ai', 'rss', 'api', 'logs', 'theme'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -417,7 +417,10 @@ const MonitoringDashboard = ({ onClose }) => {
                     : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }`}
               >
-                {tab}
+                {tab === 'api' ? 'API' : 
+                 tab === 'ai' ? 'AI' : 
+                 tab === 'rss' ? 'RSS Collection' :
+                 tab}
               </button>
             ))}
           </div>
@@ -427,7 +430,7 @@ const MonitoringDashboard = ({ onClose }) => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 overflow-y-auto">
         {/* Overview Tab */}
         {activeTab === 'overview' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
             {/* System Overview */}
             <div className="bg-white rounded-lg shadow p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">System</h3>
@@ -500,6 +503,29 @@ const MonitoringDashboard = ({ onClose }) => {
                 <div className="flex justify-between">
                   <span className="text-gray-600">Cost</span>
                   <span className="font-medium">${(metrics.ai?.tokens?.cost || 0).toFixed(4)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* RSS Collection Overview */}
+            <div className="bg-white rounded-lg shadow p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">RSS Collection</h3>
+              <div className="space-y-3">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Status</span>
+                  <span className={`font-medium ${getStatusColor(metrics.scrapy?.status || 'idle')}`}>
+                    {(metrics.scrapy?.status || 'idle').toUpperCase()}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Articles Processed</span>
+                  <span className="font-medium">{metrics.scrapy?.articlesProcessed || 0}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Last Run</span>
+                  <span className="font-medium text-xs">
+                    {metrics.scrapy?.lastRun ? new Date(metrics.scrapy.lastRun).toLocaleTimeString() : 'Never'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -974,14 +1000,14 @@ const MonitoringDashboard = ({ onClose }) => {
         )}
 
 
-        {/* Scrapy Tab */}
-        {activeTab === 'scrapy' && (
+        {/* RSS Collection Tab */}
+        {activeTab === 'rss' && (
           <div className="space-y-6">
             {sourcesLoading && (
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                 <div className="flex items-center">
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-3"></div>
-                  <span className="text-blue-700">Loading Scrapy sources from database...</span>
+                  <span className="text-blue-700">Loading RSS sources from database...</span>
                 </div>
               </div>
             )}
@@ -1045,7 +1071,7 @@ const MonitoringDashboard = ({ onClose }) => {
             {/* Source Details from Database */}
             <div className="bg-white rounded-lg shadow">
               <div className="p-6 border-b">
-                <h3 className="text-lg font-semibold text-gray-900">Scrapy Sources from Database</h3>
+                <h3 className="text-lg font-semibold text-gray-900">RSS Sources from Database</h3>
                 <p className="text-sm text-gray-600 mt-1">All sources used for scraping with article counts from the database</p>
               </div>
               <div className="max-h-96 overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-blue-300 scrollbar-track-blue-100 hover:scrollbar-thumb-blue-400">
@@ -1352,7 +1378,7 @@ const MonitoringDashboard = ({ onClose }) => {
           <div className="bg-white rounded-lg max-w-4xl w-full mx-4 max-h-[80vh] overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h2 className="text-xl font-semibold text-gray-900">
-                All Scrapy Sources ({sourceStats?.total_unique_sources || 0})
+                All RSS Sources ({sourceStats?.total_unique_sources || 0})
               </h2>
               <button
                 onClick={() => setShowFullSourcesList(false)}
