@@ -77,10 +77,10 @@ class RealTimeMonitor extends EventEmitter {
       this.collectAppMetrics();
     }, 500);
     
-    // Curăță datele vechi la fiecare 30 secunde
+    // Curăță datele vechi la fiecare 5 secunde (agresiv pentru debugging)
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
-    }, 30000);
+    }, 5000);
   }
 
   stop() {
@@ -582,24 +582,61 @@ class RealTimeMonitor extends EventEmitter {
 
   // Cleanup
   cleanup() {
-    // Remove old requests and queries that might be stuck
+    // AGGRESSIVE cleanup - remove old requests and queries that might be stuck
     const now = Date.now();
-    const timeout = 30000; // 30 seconds
+    const REQUEST_TIMEOUT = 15000; // 15 seconds for regular requests
+    const QUERY_TIMEOUT = 10000; // 10 seconds for database queries
     
+    let cleanedRequests = 0;
+    let cleanedQueries = 0;
+    
+    // Clean stuck HTTP requests
     for (const [id, request] of this.activeRequests) {
-      if (now - request.startTime > timeout) {
-        this.log('warn', 'HTTP_REQUEST_TIMEOUT', { requestId: id });
+      const duration = now - request.startTime;
+      if (duration > REQUEST_TIMEOUT) {
+        this.log('warn', 'FORCE_CLEANUP_HTTP_REQUEST', { 
+          requestId: id, 
+          url: request.url,
+          method: request.method,
+          duration,
+          ip: request.ip
+        });
+        
+        // Clear timer if exists
+        if (request.slowRequestTimer) {
+          clearTimeout(request.slowRequestTimer);
+        }
+        
         this.activeRequests.delete(id);
-        this.metrics.http.requests.active--;
+        this.metrics.http.requests.active = Math.max(0, this.metrics.http.requests.active - 1);
+        cleanedRequests++;
       }
     }
     
+    // Clean stuck database queries
     for (const [id, query] of this.activeQueries) {
-      if (now - query.startTime > timeout) {
-        this.log('warn', 'DATABASE_QUERY_TIMEOUT', { queryId: id });
+      if (now - query.startTime > QUERY_TIMEOUT) {
+        this.log('warn', 'FORCE_CLEANUP_DATABASE_QUERY', { 
+          queryId: id,
+          query: query.query,
+          duration: now - query.startTime
+        });
         this.activeQueries.delete(id);
-        this.metrics.database.queries.active--;
+        this.metrics.database.queries.active = Math.max(0, this.metrics.database.queries.active - 1);
+        cleanedQueries++;
       }
+    }
+    
+    // Log cleanup results if any
+    if (cleanedRequests > 0 || cleanedQueries > 0) {
+      console.warn(`🧹 CLEANUP: Removed ${cleanedRequests} stuck requests and ${cleanedQueries} stuck queries`);
+      
+      // Emit cleanup event for monitoring
+      this.emit('cleanup', {
+        requests: cleanedRequests,
+        queries: cleanedQueries,
+        timestamp: now
+      });
     }
   }
 

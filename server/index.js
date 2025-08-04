@@ -52,32 +52,61 @@ realTimeMonitor.start();
 setupProcessMonitoring();
 setupFileSystemMonitoring();
 
-// Global API timeout middleware
-const API_TIMEOUT = 30000; // 30 seconds max for any API request
-app.use('/api', (req, res, next) => {
-  // Set request timeout
-  req.setTimeout(API_TIMEOUT, () => {
-    console.warn(`API Request timeout: ${req.method} ${req.url}`);
+// GLOBAL REQUEST TIMEOUT - applies to ALL requests (API + static files)
+const GLOBAL_TIMEOUT = 15000; // 15 seconds max for ANY request
+const API_TIMEOUT = 30000; // 30 seconds max for API requests specifically
+
+app.use((req, res, next) => {
+  const isApiRequest = req.url.startsWith('/api');
+  const timeout = isApiRequest ? API_TIMEOUT : GLOBAL_TIMEOUT;
+  
+  // Set aggressive timeout for all requests
+  const timeoutId = setTimeout(() => {
+    console.warn(`⚠️ REQUEST TIMEOUT: ${req.method} ${req.url} (${timeout}ms)`);
+    
     if (!res.headersSent) {
-      res.status(408).json({ 
-        error: 'Request timeout', 
-        message: 'Request took too long to process',
-        timeout: API_TIMEOUT,
-        url: req.url 
-      });
+      if (isApiRequest) {
+        res.status(408).json({ 
+          error: 'Request timeout', 
+          message: `Request took longer than ${timeout/1000} seconds`,
+          timeout: timeout,
+          url: req.url 
+        });
+      } else {
+        // For static files, send simple text response
+        res.status(408).send(`Request timeout: ${req.url} took too long to process`);
+      }
     }
+    
+    // Force close the connection
+    try {
+      res.destroy();
+    } catch (e) {
+      console.warn('Failed to destroy response:', e.message);
+    }
+  }, timeout);
+  
+  // Clear timeout when response finishes
+  res.on('finish', () => {
+    clearTimeout(timeoutId);
   });
   
-  // Set response timeout
-  res.setTimeout(API_TIMEOUT, () => {
-    console.warn(`API Response timeout: ${req.method} ${req.url}`);
-    if (!res.headersSent) {
-      res.status(408).json({ 
-        error: 'Response timeout', 
-        message: 'Response took too long to send',
-        timeout: API_TIMEOUT,
-        url: req.url 
-      });
+  res.on('close', () => {
+    clearTimeout(timeoutId);
+  });
+  
+  next();
+});
+
+// Additional API-specific timeout middleware
+app.use('/api', (req, res, next) => {
+  // Additional monitoring for API requests
+  const startTime = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - startTime;
+    if (duration > 5000) {
+      console.warn(`🐌 SLOW API REQUEST: ${req.method} ${req.url} - ${duration}ms`);
     }
   });
   
@@ -882,6 +911,12 @@ realTimeMonitor.on('log', (logEntry) => {
 realTimeMonitor.on('slowRequest', (data) => {
   io.emit('slowRequest', data);
   console.warn(`🐌 SLOW REQUEST: ${data.method} ${data.url} - ${data.duration}ms`);
+});
+
+// Forward cleanup events to WebSocket clients
+realTimeMonitor.on('cleanup', (data) => {
+  io.emit('monitoringCleanup', data);
+  console.warn(`🧹 MONITORING CLEANUP: ${data.requests} requests, ${data.queries} queries removed`);
 });
 
 // Catch all handler for React app (only in production) - MUST BE LAST!
