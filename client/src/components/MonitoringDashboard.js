@@ -806,7 +806,7 @@ const MonitoringDashboard = ({ onClose }) => {
             </div>
 
             {/* Route Statistics */}
-            {metrics.http?.routes && metrics.http.routes.size > 0 && (
+            {metrics.http?.routes && Object.keys(metrics.http.routes).length > 0 && (
               <div className="bg-white rounded-lg shadow p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Route Statistics</h3>
                 <div className="max-h-80 overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
@@ -1198,7 +1198,7 @@ const MonitoringDashboard = ({ onClose }) => {
                   <p className="text-sm text-gray-600 mt-1">API endpoint usage and performance</p>
                 </div>
                 <div className="max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400">
-                  {metrics.http?.routes && metrics.http.routes.size > 0 ? (
+                  {metrics.http?.routes && Object.keys(metrics.http.routes).length > 0 ? (
                     <div className="divide-y">
                       {Array.from(metrics.http.routes.entries()).map(([route, stats]) => (
                         <div key={route} className="p-4 hover:bg-gray-50 transition-colors duration-150">

@@ -655,6 +655,41 @@ class RealTimeMonitor extends EventEmitter {
   getMetrics(category) {
     return this.metrics[category] || null;
   }
+  
+  // Get all metrics without circular references
+  getAllMetrics() {
+    // Clean active requests by removing circular references (timers)
+    const cleanActiveRequests = Array.from(this.activeRequests.values()).map(req => ({
+      id: req.id,
+      method: req.method,
+      url: req.url,
+      ip: req.ip,
+      userAgent: req.userAgent,
+      startTime: req.startTime,
+      headers: req.headers,
+      body: req.body
+      // Exclude slowRequestTimer to prevent circular reference
+    }));
+    
+    return {
+      system: this.metrics.system,
+      app: this.metrics.app,
+      http: this.metrics.http,
+      websocket: this.metrics.websocket,
+      database: this.metrics.database,
+      scrapy: this.metrics.scrapy,
+      ai: this.metrics.ai,
+      performanceHistory: {
+        cpu: this.performanceHistory.cpu,
+        memory: this.performanceHistory.memory,
+        requests: this.performanceHistory.requests,
+        responses: []
+      },
+      activeRequests: cleanActiveRequests,
+      activeQueries: Array.from(this.activeQueries.values()),
+      recentLogs: (this.recentLogs || []).slice(-50)
+    };
+  }
 
   // Get logs with filtering
   getLogs(level = null, limit = 100, event = null) {
