@@ -3,6 +3,7 @@ import sqlite3
 import os
 import sys
 import json
+import requests
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -34,13 +35,93 @@ class AIAnalysisPipeline:
     
     def __init__(self):
         self.client = None
-        api_key = os.getenv('OPENAI_API_KEY')
-        if api_key:
-            self.client = OpenAI(api_key=api_key)
+        self.ai_provider = None
+        self.ollama_model = None
+        self.ollama_url = 'http://localhost:11434'
+        
+        # Citește configurația din baza de date
+        self._load_ai_config()
+    
+    def _load_ai_config(self):
+        """Încarcă configurația AI din baza de date"""
+        try:
+            # Calea către baza de date
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.join(current_dir, '..', '..')
+            db_path = os.path.join(project_root, 'server', 'ainvestorhood.db')
+            
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Citește AI provider
+            cursor.execute("SELECT value FROM settings WHERE key = 'ai_provider'")
+            result = cursor.fetchone()
+            self.ai_provider = result[0] if result else 'openai'
+            
+            if self.ai_provider.lower() == 'openai':
+                # Pentru OpenAI - citește cheia API
+                api_key = os.getenv('OPENAI_API_KEY')
+                if api_key:
+                    self.client = OpenAI(api_key=api_key)
+            elif self.ai_provider == 'ollama':
+                # Pentru Ollama - citește modelul
+                cursor.execute("SELECT value FROM settings WHERE key = 'ollama_model'")
+                result = cursor.fetchone()
+                self.ollama_model = result[0] if result else 'llama3:latest'
+                
+            conn.close()
+        except Exception as e:
+            print(f"Error loading AI config: {e}")
+            # Fallback la OpenAI din .env
+            api_key = os.getenv('OPENAI_API_KEY')
+            if api_key:
+                self.client = OpenAI(api_key=api_key)
+                self.ai_provider = 'openai'
+    
+    def _parse_ollama_response(self, content):
+        """Fallback pentru parsing manual al răspunsului Ollama"""
+        try:
+            # Valori default
+            result = {
+                'instrument_type': 'General',
+                'instrument_name': '',
+                'recommendation': 'HOLD',
+                'confidence_score': 50,
+                'analysis': content[:200] if content else 'Analysis not available'
+            }
+            
+            # Încearcă să găsească patterns în text
+            import re
+            
+            # Caută recommendation
+            rec_match = re.search(r'"recommendation":\s*"([^"]+)"', content, re.IGNORECASE)
+            if rec_match:
+                result['recommendation'] = rec_match.group(1).upper()
+            
+            # Caută confidence score
+            conf_match = re.search(r'"confidence_score":\s*(\d+)', content)
+            if conf_match:
+                result['confidence_score'] = int(conf_match.group(1))
+            
+            # Caută instrument type
+            inst_match = re.search(r'"instrument_type":\s*"([^"]+)"', content, re.IGNORECASE)
+            if inst_match:
+                result['instrument_type'] = inst_match.group(1)
+            
+            return result
+        except Exception:
+            return {
+                'instrument_type': 'General',
+                'instrument_name': '',
+                'recommendation': 'HOLD', 
+                'confidence_score': 50,
+                'analysis': 'Analysis parsing failed'
+            }
     
     def process_item(self, item, spider):
-        if not self.client:
-            spider.logger.warning("OpenAI API key not found, skipping AI analysis")
+        # Verifică dacă AI analysis este disponibil
+        if not self.ai_provider or (self.ai_provider == 'openai' and not self.client) or (self.ai_provider == 'ollama' and not self.ollama_model):
+            spider.logger.warning(f"AI analysis not available (provider: {self.ai_provider}), using defaults")
             # Setează valori default
             item['instrument_type'] = 'General'
             item['instrument_name'] = ''
@@ -71,18 +152,55 @@ Response format: JSON only
   "analysis": "..."
 }"""
 
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text_to_analyze}
-                ],
-                max_tokens=300,
-                temperature=0.3
-            )
+            # Analizează cu provider-ul configurat
+            if self.ai_provider == 'openai':
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text_to_analyze}
+                    ],
+                    max_tokens=300,
+                    temperature=0.3
+                )
+                analysis_result = json.loads(response.choices[0].message.content)
             
-            # Parsează răspunsul JSON
-            analysis_result = json.loads(response.choices[0].message.content)
+            elif self.ai_provider == 'ollama':
+                # Folosește Ollama pentru analiză
+                ollama_response = requests.post(f"{self.ollama_url}/api/chat", json={
+                    "model": self.ollama_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text_to_analyze}
+                    ],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "num_predict": 300
+                    }
+                })
+                
+                if ollama_response.status_code == 200:
+                    ollama_result = ollama_response.json()
+                    content = ollama_result.get('message', {}).get('content', '{}')
+                    
+                    # Încearcă să extractezi JSON din răspuns
+                    try:
+                        # Caută JSON în răspuns
+                        start_idx = content.find('{')
+                        end_idx = content.rfind('}') + 1
+                        if start_idx != -1 and end_idx > start_idx:
+                            json_str = content[start_idx:end_idx]
+                            analysis_result = json.loads(json_str)
+                        else:
+                            raise ValueError("No JSON found in response")
+                    except (json.JSONDecodeError, ValueError):
+                        # Fallback cu parsing manual dacă JSON nu este valid
+                        analysis_result = self._parse_ollama_response(content)
+                else:
+                    raise Exception(f"Ollama API error: {ollama_response.status_code}")
+            else:
+                raise Exception(f"Unknown AI provider: {self.ai_provider}")
             
             # Actualizează item-ul cu rezultatele analizei
             item['instrument_type'] = analysis_result.get('instrument_type', 'General')
@@ -114,7 +232,7 @@ class DatabasePipeline:
     def open_spider(self, spider):
         # Găsește baza de date existentă
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.join(current_dir, '..', '..', '..')
+        project_root = os.path.join(current_dir, '..', '..')
         self.db_path = os.path.join(project_root, 'server', 'ainvestorhood.db')
         
         spider.logger.info(f"Connecting to database: {self.db_path}")

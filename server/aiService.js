@@ -36,16 +36,14 @@ class AIService {
   }
 
   async searchFinancialNews() {
-    // Focus on most reliable feeds to reduce timeout issues
+    // Focus on most reliable feeds only (removed problematic CNN feed)
     const primaryFeeds = [
       'https://feeds.feedburner.com/zerohedge/feed',
       'https://seekingalpha.com/feed.xml',
       'https://feeds.feedburner.com/TheMotleyFool',
-      'https://rss.cnn.com/rss/money_latest.rss',
       'https://www.marketwatch.com/rss/topstories',
       'https://cointelegraph.com/rss',
-      'https://feeds.feedburner.com/CoinDesk',
-      'https://decrypt.co/feed'
+      'https://feeds.feedburner.com/CoinDesk'
     ];
 
     console.log(`Fetching news from ${primaryFeeds.length} primary RSS feeds...`);
@@ -54,7 +52,7 @@ class AIService {
     const feedPromises = primaryFeeds.map(async (feedUrl) => {
       try {
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Feed timeout')), 6000)
+          setTimeout(() => reject(new Error('Feed timeout')), 3000) // Reduced from 6s to 3s
         );
         
         const feed = await Promise.race([
@@ -62,8 +60,8 @@ class AIService {
           timeoutPromise
         ]);
         
-        // Take only latest 10 items per feed for faster processing
-        const recentItems = feed.items.slice(0, 10);
+        // Take only latest 5 items per feed for faster processing
+        const recentItems = feed.items.slice(0, 5);
         const newsItems = [];
         
         for (const item of recentItems) {
@@ -96,24 +94,62 @@ class AIService {
 
     console.log(`📰 Total articles collected: ${allNews.length}`);
 
-    // Sort by date and return latest 25 articles (reduced for faster processing)
+    // Sort by date and return latest 15 articles (reduced for faster processing)
     return allNews
       .sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate))
-      .slice(0, 25);
+      .slice(0, 15);
   }
 
   isFinancialContent(title, description) {
-    const financialKeywords = [
-      'stock', 'shares', 'market', 'trading', 'investment', 'forex', 'crypto', 'bitcoin',
-      'ethereum', 'gold', 'oil', 'commodity', 'fund', 'portfolio', 'analyst', 'earnings',
-      'revenue', 'profit', 'loss', 'fed', 'interest rate', 'inflation', 'gdp', 'economic',
-      'finance', 'financial', 'bank', 'currency', 'dollar', 'euro', 'yen', 'index',
-      'nasdaq', 'dow', 's&p', 'ftse', 'dax', 'nikkei', 'buy', 'sell', 'bull', 'bear',
-      'rally', 'decline', 'surge', 'plunge', 'volatility', 'trend', 'support', 'resistance'
-    ];
-
     const text = (title + ' ' + description).toLowerCase();
-    return financialKeywords.some(keyword => text.includes(keyword));
+    
+    // First, exclude non-financial content with political/social keywords
+    const excludeKeywords = [
+      'kamala', 'harris', 'biden', 'trump', 'election', 'vote', 'political', 'politics',
+      'republican', 'democrat', 'congress', 'senate', 'house', 'government', 'president',
+      'vice president', 'campaign', 'rally', 'debate', 'policy', 'administration',
+      'tulsi', 'gabbard', 'book', 'memoir', 'biography', 'author', 'publishing',
+      'celebrity', 'entertainment', 'movie', 'film', 'tv show', 'actor', 'actress',
+      'sports', 'football', 'basketball', 'baseball', 'soccer', 'athlete', 'game',
+      'war', 'military', 'defense', 'conflict', 'ukraine', 'russia', 'china',
+      'climate', 'weather', 'environment', 'global warming', 'carbon', 'green energy'
+    ];
+    
+    // Exclude articles containing political/non-financial terms
+    if (excludeKeywords.some(keyword => text.includes(keyword))) {
+      return false;
+    }
+    
+    // Require strong financial indicators
+    const strongFinancialKeywords = [
+      'stock price', 'share price', 'earnings', 'revenue', 'profit', 'loss',
+      'quarterly', 'financial results', 'balance sheet', 'cash flow',
+      'dividend', 'buyback', 'ipo', 'merger', 'acquisition',
+      'nasdaq', 'nyse', 'dow jones', 's&p 500', 'ftse', 'dax', 'nikkei',
+      'forex', 'currency', 'exchange rate', 'trading', 'investor',
+      'bitcoin', 'ethereum', 'cryptocurrency', 'crypto', 'blockchain',
+      'gold price', 'oil price', 'commodity', 'futures', 'options',
+      'fed rate', 'interest rate', 'inflation rate', 'gdp growth',
+      'market cap', 'valuation', 'analyst', 'upgrade', 'downgrade',
+      'target price', 'price target', 'buy rating', 'sell rating',
+      'financial', 'banking', 'fintech', 'investment', 'fund'
+    ];
+    
+    // Must contain at least one strong financial indicator
+    const hasFinancialContent = strongFinancialKeywords.some(keyword => text.includes(keyword));
+    
+    // Additional check: look for company names, ticker symbols, or market terms
+    const companyIndicators = [
+      /\b[A-Z]{2,5}\b.*stock/i,  // Ticker symbols followed by stock
+      /\b(inc|corp|ltd|llc|company)\b/i,  // Corporate suffixes
+      /\$([\d,]+\.?\d*)(b|bn|billion|m|mn|million)/i,  // Dollar amounts in millions/billions
+      /market/i,  // Market mentions
+      /trading/i  // Trading mentions
+    ];
+    
+    const hasCompanyIndicators = companyIndicators.some(pattern => pattern.test(text));
+    
+    return hasFinancialContent || hasCompanyIndicators;
   }
 
   extractSourceFromUrl(url) {
@@ -148,14 +184,22 @@ class AIService {
 
   async analyzeWithOllama(title, content, url) {
     try {
-      const prompt = this.customPrompt || `You are an expert financial analyst. Analyze the given financial news article and provide:
+      const prompt = this.customPrompt || `You are an expert financial analyst. Analyze ONLY financial news articles about specific tradeable instruments.
+
+REJECT immediately if the article is about:
+- Politics (Biden, Trump, Kamala Harris, elections, etc.)
+- Books, memoirs, biographies, or personal stories
+- Entertainment, sports, or celebrities
+- General economic policy without specific instruments
+
+ONLY ANALYZE if the article mentions specific tradeable instruments:
 1. A concise summary (max 100 words) in simple language
 2. The financial instrument type (stocks, forex, crypto, commodities, indices)
-3. SPECIFIC instrument name (company name, ticker symbol, crypto name, etc.) - REQUIRED, no generic terms
+3. SPECIFIC instrument name (company name, ticker symbol, crypto name, etc.) - REQUIRED
 4. Trading recommendation (BUY, SELL, or HOLD)
 5. Confidence score (1-100) for the recommendation
 
-IMPORTANT: You MUST identify a specific financial instrument (like "Apple", "AAPL", "Tesla", "Bitcoin", "EUR/USD", "S&P 500"). Do NOT use generic terms like "stocks", "crypto", "market", "economy", etc. If you cannot identify a specific instrument, return null for instrument_name.`;
+CRITICAL: You MUST identify a specific financial instrument (like "Apple", "AAPL", "Tesla", "Bitcoin", "EUR/USD", "S&P 500"). If the article is about politics, books, or doesn't mention specific tradeable instruments, return null.`;
 
       const result = await this.ollama.analyzeNewsWithOllama(this.ollamaModel, prompt, title, content, url, this.tokenLimits.analysis);
       
@@ -172,18 +216,31 @@ IMPORTANT: You MUST identify a specific financial instrument (like "Apple", "AAP
 
   async analyzeWithOpenAI(title, content, url) {
     try {
-      const systemPrompt = this.customPrompt || `You are an expert financial analyst. Analyze the given financial news article and provide:
+      const systemPrompt = this.customPrompt || `You are an expert financial analyst. Analyze ONLY financial news articles about specific tradeable instruments.
+
+REJECT immediately if the article is about:
+- Politics (Biden, Trump, Kamala Harris, elections, etc.)
+- Books, memoirs, biographies, or personal stories  
+- Entertainment, sports, or celebrities
+- General economic policy without specific instruments
+
+ONLY ANALYZE if the article mentions specific tradeable instruments:
 1. A concise summary (max 100 words) in simple language
 2. The financial instrument type (stocks, forex, crypto, commodities, indices)
-3. SPECIFIC instrument name (company name, ticker symbol, crypto name, etc.) - REQUIRED, no generic terms
+3. SPECIFIC instrument name (company name, ticker symbol, crypto name, etc.) - REQUIRED
 4. Trading recommendation (BUY, SELL, or HOLD)
 5. Confidence score (1-100) for the recommendation
 
-IMPORTANT: You MUST identify a specific financial instrument (like "Apple", "AAPL", "Tesla", "Bitcoin", "EUR/USD", "S&P 500"). Do NOT use generic terms like "stocks", "crypto", "market", "economy", etc. If you cannot identify a specific instrument, return null for instrument_name.
+CRITICAL: You MUST identify a specific financial instrument (like "Apple", "AAPL", "Tesla", "Bitcoin", "EUR/USD", "S&P 500"). If the article is about politics, books, or doesn't mention specific tradeable instruments, return null.
 
 Return ONLY a JSON object with: summary, instrument_type, instrument_name, recommendation, confidence_score`;
 
-      const response = await this.openai.chat.completions.create({
+      // Add timeout for AI analysis
+      const aiTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('AI analysis timeout')), 10000) // 10 second timeout
+      );
+
+      const aiRequest = this.openai.chat.completions.create({
         model: "gpt-4",
         messages: [
           {
@@ -198,6 +255,8 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
         max_tokens: this.tokenLimits.analysis,
         temperature: 0.2
       });
+
+      const response = await Promise.race([aiRequest, aiTimeout]);
 
       const analysis = JSON.parse(response.choices[0].message.content);
       
@@ -242,6 +301,20 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
 
     const name = instrumentName.toLowerCase().trim();
     
+    // Explicitly reject political/non-financial terms
+    const politicalTerms = [
+      'kamala', 'harris', 'biden', 'trump', 'president', 'vice president',
+      'tulsi', 'gabbard', 'book', 'memoir', 'author', 'publisher',
+      'republican', 'democrat', 'congress', 'senate', 'election',
+      'campaign', 'political', 'politics', 'policy', 'administration',
+      'government', 'federal', 'state', 'military', 'defense'
+    ];
+
+    // Reject any political/personal names
+    if (politicalTerms.some(term => name.includes(term))) {
+      return false;
+    }
+    
     // Generic/vague terms to reject
     const genericTerms = [
       'stocks', 'stock', 'shares', 'equity', 'equities',
@@ -254,7 +327,7 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
       'fund', 'funds', 'portfolio', 'bond', 'bonds',
       'derivatives', 'options', 'futures',
       'general', 'various', 'multiple', 'several', 'mixed',
-      'unspecified', 'unknown', 'unclear', 'tbd'
+      'unspecified', 'unknown', 'unclear', 'tbd', 'n/a', 'null'
     ];
 
     // Reject generic terms
@@ -272,6 +345,20 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
       return false;
     }
 
+    // Additional validation: reject names that sound like people or books
+    const personalNamePatterns = [
+      /\b(mr|mrs|ms|dr|prof)\b/,
+      /book$/,
+      /memoir$/,
+      /biography$/,
+      /story$/,
+      /tale$/
+    ];
+
+    if (personalNamePatterns.some(pattern => pattern.test(name))) {
+      return false;
+    }
+
     // Valid specific instrument examples:
     // - Company names: "Apple", "Tesla", "Microsoft", "AAPL", "TSLA"
     // - Specific cryptos: "Solana", "Cardano", "Polygon"
@@ -279,6 +366,7 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
     // - Specific currencies: "USD/EUR", "GBP/JPY"
     // - Specific indices: "S&P 500", "NASDAQ 100", "Dow Jones"
 
+    console.log(`✅ Validated financial instrument: "${instrumentName}" (${instrumentType})`);
     return true; // Passed all validation checks
   }
 

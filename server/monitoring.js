@@ -60,7 +60,7 @@ class MonitoringService {
 
       socket.on('frontend-refresh', (data) => {
         this.stats.frontend.lastRefresh = new Date().toISOString();
-        this.stats.frontend.articlesDisplayed = data.articlesCount || 0;
+        this.stats.frontend.articlesDisplayed = (data && data.articlesCount) || 0;
         this.broadcastStats();
       });
     });
@@ -104,6 +104,17 @@ class MonitoringService {
         break;
     }
     this.stats.backend.lastActivity = new Date().toISOString();
+    this.broadcastStats();
+  }
+
+
+  onNewsCollectionComplete(stats) {
+    this.stats.backend.newsCollection.articlesProcessed += stats.processed || 0;
+    this.stats.backend.newsCollection.duplicatesFound += stats.duplicates || 0;
+    this.stats.backend.newsCollection.errors += stats.errors || 0;
+    this.stats.backend.lastActivity = new Date().toISOString();
+    
+    console.log(`📊 News collection completed: ${stats.processed || 0} processed, ${stats.duplicates || 0} duplicates, ${stats.errors || 0} errors`);
     this.broadcastStats();
   }
 

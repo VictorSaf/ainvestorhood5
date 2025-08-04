@@ -154,7 +154,7 @@ class NewsScheduler {
       let processedCount = 0;
       let duplicateCount = 0;
       let errorCount = 0;
-      const maxArticlesPerRun = 10; // Limit articles per collection to speed up processing
+      const maxArticlesPerRun = 5; // Further reduced to speed up processing
 
       console.log(`📊 Processing up to ${maxArticlesPerRun} articles from ${newsResults.length} available`);
 

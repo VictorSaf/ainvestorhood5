@@ -127,7 +127,7 @@ class AdvancedScraper {
       await new Promise(resolve => setTimeout(resolve, this.getRandomDelay()));
 
       const response = await axios.get(url, {
-        timeout: 15000,
+        timeout: 5000, // Reduced from 15s to 5s
         headers: {
           'User-Agent': this.getRandomUserAgent(),
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -246,7 +246,7 @@ class AdvancedScraper {
   async intelligentScrape(url) {
     // Add timeout wrapper for entire scraping process
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Scraping timeout')), 15000) // 15 second total timeout
+      setTimeout(() => reject(new Error('Scraping timeout')), 8000) // Reduced to 8 seconds
     );
     
     try {

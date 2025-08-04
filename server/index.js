@@ -96,7 +96,7 @@ app.post('/api/setup', async (req, res) => {
       headers: req.headers['content-type'] 
     });
     
-    const { aiProvider, apiKey, ollamaModel, customPrompt } = req.body;
+    const { aiProvider, apiKey, ollamaModel, customPrompt, tokenLimits } = req.body;
     
     if (aiProvider === 'openai') {
       if (!apiKey) {
@@ -109,6 +109,10 @@ app.post('/api/setup', async (req, res) => {
       if (customPrompt) {
         await db.setSetting('custom_prompt', customPrompt);
       }
+      if (tokenLimits) {
+        await db.setSetting('token_limits', JSON.stringify(tokenLimits));
+        console.log('✅ Token limits saved:', tokenLimits);
+      }
       console.log('✅ OpenAI configuration saved successfully');
       res.json({ success: true, message: 'OpenAI configuration saved successfully' });
       
@@ -120,6 +124,10 @@ app.post('/api/setup', async (req, res) => {
       
       console.log('✅ Setting Ollama configuration...');
       await scheduler.setOllamaConfig(ollamaModel, customPrompt);
+      if (tokenLimits) {
+        await db.setSetting('token_limits', JSON.stringify(tokenLimits));
+        console.log('✅ Token limits saved:', tokenLimits);
+      }
       console.log('✅ Ollama configuration saved successfully');
       res.json({ success: true, message: 'Ollama configuration saved successfully' });
       
@@ -155,6 +163,65 @@ app.post('/api/collect-news', async (req, res) => {
   try {
     await scheduler.runOnce();
     res.json({ success: true, message: 'News collection started' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Populate feed with sample articles for demo
+app.post('/api/populate-feed', async (req, res) => {
+  try {
+    const sampleArticles = [
+      {
+        title: 'AI Revolution Transforms Financial Trading',
+        summary: 'Artificial Intelligence algorithms now handle 85% of high-frequency trading, revolutionizing market dynamics and efficiency.',
+        instrument_type: 'stocks',
+        instrument_name: 'AI_SECTOR',
+        recommendation: 'BUY',
+        confidence_score: 91,
+        source_url: 'https://example.com/ai-trading',
+        content_hash: `hash-ai-${Date.now()}`,
+        published_at: new Date().toISOString()
+      },
+      {
+        title: 'Quantum Computing Stocks Surge 40%',
+        summary: 'Quantum computing companies see massive gains following breakthrough in error correction technology.',
+        instrument_type: 'stocks',
+        instrument_name: 'QUANTUM',
+        recommendation: 'BUY',
+        confidence_score: 87,
+        source_url: 'https://example.com/quantum-surge',
+        content_hash: `hash-quantum-${Date.now()}`,
+        published_at: new Date().toISOString()
+      },
+      {
+        title: 'Central Bank Digital Currencies Gain Momentum',
+        summary: 'Multiple central banks accelerate CBDC development as digital payments reshape global finance.',
+        instrument_type: 'crypto',
+        instrument_name: 'CBDC',
+        recommendation: 'BUY',
+        confidence_score: 76,
+        source_url: 'https://example.com/cbdc-momentum',
+        content_hash: `hash-cbdc-${Date.now()}`,
+        published_at: new Date().toISOString()
+      }
+    ];
+
+    let addedCount = 0;
+    for (const article of sampleArticles) {
+      try {
+        await db.addArticle(article);
+        addedCount++;
+      } catch (error) {
+        console.log(`Skipped duplicate article: ${article.title}`);
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      message: `Added ${addedCount} new articles to feed`,
+      articlesAdded: addedCount
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -284,7 +351,11 @@ app.post('/api/ollama/test', async (req, res) => {
     const OllamaService = require('./ollamaService');
     const ollama = new OllamaService();
     
-    const result = await ollama.testModel(model);
+    // Get token limits from database
+    const tokenLimitsStr = await db.getSetting('token_limits');
+    const tokenLimits = tokenLimitsStr ? JSON.parse(tokenLimitsStr) : { test: 50 };
+    
+    const result = await ollama.testModel(model, "Hello", tokenLimits.test);
     res.json(result);
   } catch (error) {
     console.error('Error testing Ollama model:', error);
@@ -299,12 +370,25 @@ app.get('/api/ai-config', async (req, res) => {
     const ollamaModel = await db.getSetting('ollama_model');
     const customPrompt = await db.getSetting('custom_prompt');
     const hasOpenAIKey = !!(await db.getSetting('openai_api_key'));
+    const tokenLimitsStr = await db.getSetting('token_limits');
+    let tokenLimits = {
+      chat: 1000,
+      analysis: 800,
+      streaming: 1000,
+      test: 50
+    };
+    
+    if (tokenLimitsStr) {
+      const savedLimits = JSON.parse(tokenLimitsStr);
+      tokenLimits = { ...tokenLimits, ...savedLimits };
+    }
     
     res.json({
       aiProvider,
       ollamaModel,
       customPrompt,
-      hasOpenAIKey
+      hasOpenAIKey,
+      tokenLimits
     });
   } catch (error) {
     console.error('Error getting AI config:', error);
@@ -341,6 +425,7 @@ app.get('/api/ai-metrics', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 // Test OpenAI model
 app.post('/api/openai/test', async (req, res) => {
@@ -490,6 +575,83 @@ app.post('/api/ai-chat-stream', async (req, res) => {
     }
     
     res.status(500).json({ error: error.message });
+  }
+});
+
+// RSS Sources endpoint for monitoring dashboard
+app.get('/api/rss-sources', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    
+    // Get RSS feed statistics from the database
+    const articles = await db.getRecentArticles(limit);
+    
+    // RSS feeds that we collect from (from aiService.js)
+    const rssFeeds = [
+      { domain: 'zerohedge.com', feed: 'https://feeds.feedburner.com/zerohedge/feed', name: 'ZeroHedge' },
+      { domain: 'seekingalpha.com', feed: 'https://seekingalpha.com/feed.xml', name: 'Seeking Alpha' },
+      { domain: 'motleyfool.com', feed: 'https://feeds.feedburner.com/TheMotleyFool', name: 'The Motley Fool' },
+      { domain: 'investing.com', feed: 'https://www.investing.com/rss/news.rss', name: 'Investing.com' },
+      { domain: 'cnn.com', feed: 'https://rss.cnn.com/rss/money_latest.rss', name: 'CNN Business' },
+      { domain: 'npr.org', feed: 'https://feeds.npr.org/1003/rss.xml', name: 'NPR Business' },
+      { domain: 'washingtonpost.com', feed: 'https://feeds.washingtonpost.com/rss/business', name: 'Washington Post Business' },
+      { domain: 'nasdaq.com', feed: 'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets', name: 'NASDAQ' },
+      { domain: 'yahoo.com', feed: 'https://feeds.finance.yahoo.com/rss/2.0/headline', name: 'Yahoo Finance' },
+      { domain: 'bloomberg.com', feed: 'https://feeds.bloomberg.com/markets/news.rss', name: 'Bloomberg' },
+      { domain: 'marketwatch.com', feed: 'https://www.marketwatch.com/rss/topstories', name: 'MarketWatch' },
+      { domain: 'reuters.com', feed: 'https://feeds.reuters.com/reuters/businessNews', name: 'Reuters Business' },
+      { domain: 'cointelegraph.com', feed: 'https://cointelegraph.com/rss', name: 'Cointelegraph' },
+      { domain: 'coindesk.com', feed: 'https://feeds.feedburner.com/CoinDesk', name: 'CoinDesk' },
+      { domain: 'decrypt.co', feed: 'https://decrypt.co/feed', name: 'Decrypt' }
+    ];
+
+    // Count articles by source domain
+    const sourceStats = {};
+    articles.forEach(article => {
+      if (article.source_url) {
+        try {
+          const domain = new URL(article.source_url).hostname.replace('www.', '');
+          sourceStats[domain] = (sourceStats[domain] || 0) + 1;
+        } catch (e) {
+          // Skip invalid URLs
+        }
+      }
+    });
+
+    // Create sources with counts
+    const sources = rssFeeds.map(feed => {
+      const domainArticles = articles.filter(a => a.source_url && a.source_url.includes(feed.domain));
+      const sortedDates = domainArticles.map(a => a.created_at).sort();
+      
+      return {
+        domain: feed.domain,
+        feed_url: feed.feed,
+        name: feed.name,
+        articles_count: sourceStats[feed.domain] || 0,
+        first_scraped: sortedDates.length > 0 ? sortedDates[0] : null,
+        last_scraped: sortedDates.length > 0 ? sortedDates[sortedDates.length - 1] : null
+      };
+    });
+
+    // Calculate statistics
+    const statistics = {
+      total_unique_sources: sources.length,
+      total_articles: articles.length,
+      active_sources: sources.filter(s => s.articles_count > 0).length,
+      date_range: {
+        first: articles.length > 0 ? articles[articles.length - 1].created_at : null,
+        last: articles.length > 0 ? articles[0].created_at : null
+      }
+    };
+
+    res.json({
+      sources: sources.slice(0, limit),
+      statistics
+    });
+
+  } catch (error) {
+    console.error('Error fetching RSS sources:', error);
+    res.status(500).json({ error: 'Failed to fetch RSS sources' });
   }
 });
 

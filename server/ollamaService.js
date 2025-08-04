@@ -3,7 +3,7 @@ const axios = require('axios');
 class OllamaService {
   constructor(baseUrl = null) {
     // Use Docker service name when running in container, localhost otherwise
-    this.baseUrl = baseUrl || process.env.OLLAMA_HOST || 'http://ollama:11434';
+    this.baseUrl = baseUrl || process.env.OLLAMA_HOST || 'http://localhost:11434';
   }
 
   async getAvailableModels() {
@@ -25,7 +25,7 @@ class OllamaService {
     }
   }
 
-  async analyzeNewsWithOllama(model, prompt, title, content, url) {
+  async analyzeNewsWithOllama(model, prompt, title, content, url, tokenLimit = 500) {
     try {
       const analysisPrompt = `${prompt}
 
@@ -50,7 +50,7 @@ Please analyze this financial news article and provide your response in JSON for
         stream: false,
         options: {
           temperature: 0.2,
-          num_predict: 500
+          num_predict: tokenLimit
         }
       }, {
         timeout: 60000
@@ -60,15 +60,39 @@ Please analyze this financial news article and provide your response in JSON for
       try {
         // Extract JSON from response
         const responseText = response.data.response;
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        console.log('Raw Ollama response:', responseText.substring(0, 200) + '...');
         
+        // Try multiple approaches to extract JSON
+        let jsonText = null;
+        
+        // Approach 1: Find complete JSON object
+        const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
         if (jsonMatch) {
-          analysis = JSON.parse(jsonMatch[0]);
+          jsonText = jsonMatch[0];
+        } else {
+          // Approach 2: Look for JSON between specific markers
+          const startMarker = responseText.indexOf('{');
+          const endMarker = responseText.lastIndexOf('}');
+          if (startMarker !== -1 && endMarker !== -1 && endMarker > startMarker) {
+            jsonText = responseText.substring(startMarker, endMarker + 1);
+          }
+        }
+        
+        if (jsonText) {
+          // Clean up common JSON issues
+          jsonText = jsonText
+            .replace(/,\s*}/g, '}')  // Remove trailing commas
+            .replace(/,\s*]/g, ']')  // Remove trailing commas in arrays
+            .replace(/[\u0000-\u001F\u007F-\u009F]/g, ""); // Remove control characters
+          
+          analysis = JSON.parse(jsonText);
         } else {
           throw new Error('No JSON found in response');
         }
       } catch (parseError) {
         console.error('Error parsing Ollama response:', parseError);
+        console.error('Problematic response text:', response.data.response);
+        
         // Fallback analysis
         analysis = {
           summary: `Analysis of: ${title.substring(0, 80)}...`,
@@ -117,14 +141,17 @@ Please analyze this financial news article and provide your response in JSON for
     }
   }
 
-  async testModel(model, testPrompt = "Hello") {
+  async testModel(model, testPrompt = "Hello", tokenLimit = null) {
     try {
+      // Use provided token limit or default
+      const numPredict = tokenLimit || 10;
+      
       const response = await axios.post(`${this.baseUrl}/api/generate`, {
         model: model,
         prompt: testPrompt,
         stream: false,
         options: {
-          num_predict: 10
+          num_predict: numPredict
         }
       }, {
         timeout: 45000
@@ -173,7 +200,7 @@ Please analyze this financial news article and provide your response in JSON for
     }
   }
 
-  async chatWithModel(model, message, customPrompt = null) {
+  async chatWithModel(model, message, customPrompt = null, tokenLimit = 300) {
     try {
       const prompt = customPrompt 
         ? `${customPrompt}\n\nUser: ${message}\nAssistant:`
@@ -185,7 +212,7 @@ Please analyze this financial news article and provide your response in JSON for
         stream: false,
         options: {
           temperature: 0.7,
-          num_predict: 300,
+          num_predict: tokenLimit,
           top_k: 40,
           top_p: 0.9
         }
@@ -215,7 +242,7 @@ Please analyze this financial news article and provide your response in JSON for
     }
   }
 
-  async streamChatWithModel(model, message, customPrompt = null, onChunk = null) {
+  async streamChatWithModel(model, message, customPrompt = null, onChunk = null, tokenLimit = 300) {
     try {
       const prompt = customPrompt 
         ? `${customPrompt}\n\nUser: ${message}\nAssistant:`
@@ -227,7 +254,7 @@ Please analyze this financial news article and provide your response in JSON for
         stream: true,
         options: {
           temperature: 0.7,
-          num_predict: 300,
+          num_predict: tokenLimit,
           top_k: 40,
           top_p: 0.9
         }

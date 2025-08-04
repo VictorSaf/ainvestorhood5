@@ -101,8 +101,8 @@ const MonitoringDashboard = ({ onClose }) => {
   const maxDataPoints = 288; // 2 hours at 250ms intervals = 28800, but keep 288 for display
 
   useEffect(() => {
-    // Connect to monitoring WebSocket
-    socketRef.current = io('http://localhost:8080');
+    // Connect to monitoring WebSocket (use relative URL for Docker compatibility)
+    socketRef.current = io();
     
     socketRef.current.on('connect', () => {
       console.log('Connected to monitoring');
@@ -213,7 +213,7 @@ const MonitoringDashboard = ({ onClose }) => {
 
   const fetchMetrics = async () => {
     try {
-      const response = await fetch('http://localhost:8080/api/monitor/metrics');
+      const response = await fetch('/api/monitor/metrics');
       const data = await response.json();
       setMetrics(data);
       setLogs(data.recentLogs || []);
@@ -267,7 +267,7 @@ const MonitoringDashboard = ({ onClose }) => {
     
     setSourcesLoading(true);
     try {
-      const response = await fetch('http://localhost:8080/api/rss-sources?limit=100');
+      const response = await fetch('/api/rss-sources?limit=100');
       const data = await response.json();
       
       if (data.sources) {
@@ -286,7 +286,7 @@ const MonitoringDashboard = ({ onClose }) => {
     console.log('fetchAllScrapySources called');
     setSourcesLoading(true);
     try {
-      const response = await fetch('http://localhost:8080/api/rss-sources?limit=1000');
+      const response = await fetch('/api/rss-sources?limit=1000');
       const data = await response.json();
       console.log('Fetched sources data:', data);
       
