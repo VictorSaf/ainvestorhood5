@@ -7,9 +7,15 @@ const AdvancedScraper = require('./advancedScraper');
 const OllamaService = require('./ollamaService');
 
 class AIService {
-  constructor(apiKey, aiProvider = 'openai', ollamaModel = null, customPrompt = null) {
+  constructor(apiKey, aiProvider = 'openai', ollamaModel = null, customPrompt = null, tokenLimits = null) {
     this.aiProvider = aiProvider;
     this.customPrompt = customPrompt;
+    this.tokenLimits = tokenLimits || {
+      chat: 1000,
+      analysis: 800,
+      streaming: 1000,
+      test: 50
+    };
     
     if (aiProvider === 'openai') {
       this.openai = new OpenAI({
@@ -39,7 +45,24 @@ class AIService {
       'https://feeds.npr.org/1003/rss.xml',
       'https://feeds.washingtonpost.com/rss/business',
       'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
-      'https://feeds.finance.yahoo.com/rss/2.0/headline'
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      // Additional financial news sources
+      'https://feeds.bloomberg.com/markets/news.rss',
+      'https://www.marketwatch.com/rss/topstories',
+      'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',
+      'https://feeds.reuters.com/reuters/businessNews',
+      'https://feeds.financial-planning.com/financial-planning/news',
+      'https://feeds.feedburner.com/TheStreet',
+      'https://rss.cnn.com/rss/money_markets.rss',
+      'https://feeds.feedburner.com/InvestorsBusinessDaily-IBDEditorials',
+      // Crypto specific feeds
+      'https://cointelegraph.com/rss',
+      'https://feeds.feedburner.com/CoinDesk',
+      'https://decrypt.co/feed',
+      // Tech and innovation feeds relevant to finance
+      'https://feeds.feedburner.com/oreilly/radar',
+      'https://feeds.feedburner.com/TechCrunch',
+      'https://rss.cnn.com/rss/money_technology.rss'
     ];
 
     const allNews = [];
@@ -128,25 +151,35 @@ class AIService {
       const prompt = this.customPrompt || `You are an expert financial analyst. Analyze the given financial news article and provide:
 1. A concise summary (max 100 words) in simple language
 2. The financial instrument type (stocks, forex, crypto, commodities, indices)
-3. Specific instrument name if mentioned
+3. SPECIFIC instrument name (company name, ticker symbol, crypto name, etc.) - REQUIRED, no generic terms
 4. Trading recommendation (BUY, SELL, or HOLD)
-5. Confidence score (1-100) for the recommendation`;
+5. Confidence score (1-100) for the recommendation
 
-      return await this.ollama.analyzeNewsWithOllama(this.ollamaModel, prompt, title, content, url);
+IMPORTANT: You MUST identify a specific financial instrument (like "Apple", "AAPL", "Tesla", "Bitcoin", "EUR/USD", "S&P 500"). Do NOT use generic terms like "stocks", "crypto", "market", "economy", etc. If you cannot identify a specific instrument, return null for instrument_name.`;
+
+      const result = await this.ollama.analyzeNewsWithOllama(this.ollamaModel, prompt, title, content, url, this.tokenLimits.analysis);
+      
+      if (result) {
+        return this.validateAnalysis(result, title);
+      }
+      
+      return null;
     } catch (error) {
       console.error('Error analyzing with Ollama:', error);
-      return this.getDefaultAnalysis(title);
+      return null;
     }
   }
 
   async analyzeWithOpenAI(title, content, url) {
     try {
-      const systemPrompt = this.customPrompt || `You are an expert financial analyst. Analyze the given news article and provide:
+      const systemPrompt = this.customPrompt || `You are an expert financial analyst. Analyze the given financial news article and provide:
 1. A concise summary (max 100 words) in simple language
 2. The financial instrument type (stocks, forex, crypto, commodities, indices)
-3. Specific instrument name if mentioned
+3. SPECIFIC instrument name (company name, ticker symbol, crypto name, etc.) - REQUIRED, no generic terms
 4. Trading recommendation (BUY, SELL, or HOLD)
 5. Confidence score (1-100) for the recommendation
+
+IMPORTANT: You MUST identify a specific financial instrument (like "Apple", "AAPL", "Tesla", "Bitcoin", "EUR/USD", "S&P 500"). Do NOT use generic terms like "stocks", "crypto", "market", "economy", etc. If you cannot identify a specific instrument, return null for instrument_name.
 
 Return ONLY a JSON object with: summary, instrument_type, instrument_name, recommendation, confidence_score`;
 
@@ -162,7 +195,7 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
             content: `Article Title: ${title}\n\nContent: ${content}\n\nURL: ${url}`
           }
         ],
-        max_tokens: 300,
+        max_tokens: this.tokenLimits.analysis,
         temperature: 0.2
       });
 
@@ -193,7 +226,60 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
     // Validate confidence score
     result.confidence_score = Math.max(1, Math.min(100, result.confidence_score));
 
+    // Validate financial instrument - reject if too generic or unclear
+    if (!this.isValidFinancialInstrument(result.instrument_name, result.instrument_type)) {
+      return null; // Reject this article
+    }
+
     return result;
+  }
+
+  isValidFinancialInstrument(instrumentName, instrumentType) {
+    // Reject if no specific instrument name
+    if (!instrumentName || typeof instrumentName !== 'string' || instrumentName.trim().length < 2) {
+      return false;
+    }
+
+    const name = instrumentName.toLowerCase().trim();
+    
+    // Generic/vague terms to reject
+    const genericTerms = [
+      'stocks', 'stock', 'shares', 'equity', 'equities',
+      'market', 'markets', 'trading', 'investment', 'investments',
+      'finance', 'financial', 'economy', 'economic',
+      'crypto', 'cryptocurrency', 'bitcoin', 'ethereum', 'coins',
+      'forex', 'currency', 'currencies', 'dollar', 'euro',
+      'commodity', 'commodities', 'gold', 'oil', 'energy',
+      'index', 'indices', 'sector', 'industry',
+      'fund', 'funds', 'portfolio', 'bond', 'bonds',
+      'derivatives', 'options', 'futures',
+      'general', 'various', 'multiple', 'several', 'mixed',
+      'unspecified', 'unknown', 'unclear', 'tbd'
+    ];
+
+    // Reject generic terms
+    if (genericTerms.includes(name)) {
+      return false;
+    }
+
+    // Reject very short names (likely generic)
+    if (name.length < 3) {
+      return false;
+    }
+
+    // Must contain at least one letter or number (not just symbols)
+    if (!/[a-zA-Z0-9]/.test(name)) {
+      return false;
+    }
+
+    // Valid specific instrument examples:
+    // - Company names: "Apple", "Tesla", "Microsoft", "AAPL", "TSLA"
+    // - Specific cryptos: "Solana", "Cardano", "Polygon"
+    // - Specific commodities: "WTI Crude", "Brent Oil", "Natural Gas"
+    // - Specific currencies: "USD/EUR", "GBP/JPY"
+    // - Specific indices: "S&P 500", "NASDAQ 100", "Dow Jones"
+
+    return true; // Passed all validation checks
   }
 
   getDefaultAnalysis(title) {
@@ -232,7 +318,7 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
             content: "Hello, please confirm that OpenAI is working correctly."
           }
         ],
-        max_tokens: 50,
+        max_tokens: this.tokenLimits.test,
         temperature: 0.2
       });
 
@@ -266,7 +352,7 @@ Return ONLY a JSON object with: summary, instrument_type, instrument_name, recom
             content: message
           }
         ],
-        max_tokens: 500,
+        max_tokens: this.tokenLimits.chat,
         temperature: 0.7
       });
 

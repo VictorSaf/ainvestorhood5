@@ -119,8 +119,8 @@ class DatabaseWrapper {
   getRecentArticles(limit = 50) {
     return new Promise((resolve, reject) => {
       this.db.all(`SELECT * FROM news_articles 
-       WHERE created_at >= datetime('now', '-3 days')
-       ORDER BY COALESCE(published_at, created_at) DESC 
+       WHERE created_at >= datetime('now', '-10 days')
+       ORDER BY created_at DESC 
        LIMIT ?`, [limit], (err, rows) => {
         if (err) {
           reject(err);

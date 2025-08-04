@@ -27,17 +27,31 @@ class NewsScheduler {
     try {
       const aiProvider = await this.db.getSetting('ai_provider') || 'openai';
       
+      // Load token limits from database
+      const tokenLimitsStr = await this.db.getSetting('token_limits');
+      let tokenLimits = {
+        chat: 1000,
+        analysis: 800,
+        streaming: 1000,
+        test: 50
+      };
+      
+      if (tokenLimitsStr) {
+        const savedLimits = JSON.parse(tokenLimitsStr);
+        tokenLimits = { ...tokenLimits, ...savedLimits };
+      }
+      
       if (aiProvider === 'openai') {
         const apiKey = await this.db.getSetting('openai_api_key');
         if (apiKey) {
           const customPrompt = await this.db.getSetting('custom_prompt');
-          this.aiService = new AIService(apiKey, 'openai', null, customPrompt);
+          this.aiService = new AIService(apiKey, 'openai', null, customPrompt, tokenLimits);
         }
       } else if (aiProvider === 'ollama') {
         const ollamaModel = await this.db.getSetting('ollama_model');
         const customPrompt = await this.db.getSetting('custom_prompt');
         if (ollamaModel) {
-          this.aiService = new AIService(null, 'ollama', ollamaModel, customPrompt);
+          this.aiService = new AIService(null, 'ollama', ollamaModel, customPrompt, tokenLimits);
         }
       }
     } catch (error) {
@@ -71,8 +85,8 @@ class NewsScheduler {
   startScheduler() {
     if (this.isRunning) return;
 
-    // Run every 2 minutes for more frequent updates
-    cron.schedule('*/2 * * * *', async () => {
+    // Run every 1 minute for more frequent updates
+    cron.schedule('*/1 * * * *', async () => {
       if (!this.aiService) {
         console.log('No AI service available, skipping news collection');
         return;
@@ -103,47 +117,28 @@ class NewsScheduler {
   }
 
   async collectAndAnalyzeNews() {
-    console.log('🚀 Starting Scrapy-based news collection...');
+    console.log('🚀 Starting RSS-based news collection...');
     monitoring.onNewsCollectionStart();
     liveStream.broadcastProcessingStatus(true);
 
     try {
-      // Verifică dacă Scrapy este configurat
-      const scrapyReady = await this.scrapyService.checkSetup();
-      if (!scrapyReady) {
-        console.log('⚠️  Scrapy not ready, attempting fallback...');
-        return await this.collectWithRSSFallback();
-      }
-
-      // Rulează scraper-ul Scrapy
-      const result = await this.scrapyService.runScraper();
-      
-      if (result.success) {
-        const stats = {
-          processed: result.articlesProcessed || 0,
-          duplicates: 0, // Scrapy gestionează duplicatele intern
-          errors: 0,
-          method: 'Scrapy'
-        };
-
-        console.log(`✅ Scrapy collection completed: ${stats.processed} articles processed`);
-        monitoring.onNewsCollectionComplete(stats);
-        liveStream.broadcastProcessingStatus(false);
-        
-        // Notifică live stream să sincronizeze articolele
-        liveStream.syncArticles();
-        
-        return stats;
-      } else {
-        throw new Error(result.message || 'Scrapy collection failed');
-      }
+      // Folosește direct metoda RSS legacy (Scrapy are probleme)
+      console.log('📡 Using RSS legacy collection method...');
+      return await this.collectWithLegacyMethod();
 
     } catch (error) {
-      console.error('❌ Scrapy news collection failed:', error);
+      console.error('❌ RSS news collection failed:', error);
+      liveStream.broadcastProcessingStatus(false);
       
-      // Fallback la metoda veche dacă Scrapy eșuează
-      console.log('🔄 Falling back to legacy RSS collection...');
-      return await this.collectWithLegacyMethod();
+      const stats = {
+        processed: 0,
+        duplicates: 0,
+        errors: 1,
+        method: 'RSS'
+      };
+      
+      monitoring.onNewsCollectionComplete(stats);
+      return stats;
     }
   }
 
@@ -159,9 +154,14 @@ class NewsScheduler {
 
       for (const newsItem of newsResults) {
         try {
+          console.log(`Processing article: ${newsItem.title}`);
+          
           // Fetch full article content
           const content = await this.aiService.fetchArticleContent(newsItem.url);
-          if (!content) continue;
+          if (!content) {
+            console.log(`No content fetched for: ${newsItem.title}`);
+            continue;
+          }
 
           // Generate content hash for duplicate detection
           const contentHash = this.aiService.generateContentHash(newsItem.title, content);
@@ -184,9 +184,13 @@ class NewsScheduler {
 
           // Track AI usage for news analysis
           const processingTime = Date.now() - startTime;
-          const realTimeMonitor = require('./realTimeMonitor');
-          const aiProvider = (await this.database.getSetting('ai_provider')) || 'openai';
-          realTimeMonitor.recordAIRequest(aiProvider, processingTime, analysis.tokens || 0);
+          try {
+            const realTimeMonitor = require('./realTimeMonitor');
+            const aiProvider = (await this.db.getSetting('ai_provider')) || 'openai';
+            realTimeMonitor.recordAIRequest(aiProvider, processingTime, analysis.tokens || 0);
+          } catch (monitorError) {
+            console.warn('Failed to record AI request metrics:', monitorError.message);
+          }
 
           // Validate that all required fields are present
           if (!analysis.summary || !analysis.recommendation || !analysis.confidence_score) {
@@ -235,6 +239,8 @@ class NewsScheduler {
 
         } catch (error) {
           console.error('Error processing news item:', error.message);
+          console.error('Error stack:', error.stack);
+          console.error('Article details:', { title: newsItem?.title, url: newsItem?.url });
           errorCount++;
         }
       }
@@ -249,6 +255,9 @@ class NewsScheduler {
         errors: errorCount,
         completed: true
       });
+
+      // Sync all articles from database to WebSocket clients
+      await liveStream.syncArticles();
 
     } catch (error) {
       console.error('Error in news collection:', error);
