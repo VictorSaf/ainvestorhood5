@@ -22,7 +22,7 @@ class RealTimeMonitor extends EventEmitter {
       http: {
         requests: { total: 0, active: 0, errors: 0, avgResponseTime: 0 },
         responses: { success: 0, error: 0, pending: 0 },
-        routes: new Map()
+        routes: {}
       },
       websocket: {
         connections: { total: 0, active: 0 },
@@ -198,29 +198,33 @@ class RealTimeMonitor extends EventEmitter {
     
     // Monitor response
     const originalSend = res.send;
+    const monitor = this; // Capture the monitor instance
     res.send = function(data) {
       const endTime = Date.now();
       const duration = endTime - startTime;
       
       // Update metrics
-      this.metrics.http.requests.active--;
+      monitor.metrics.http.requests.active--;
       
       if (res.statusCode >= 200 && res.statusCode < 400) {
-        this.metrics.http.responses.success++;
+        monitor.metrics.http.responses.success++;
       } else {
-        this.metrics.http.responses.error++;
-        this.metrics.http.requests.errors++;
+        monitor.metrics.http.responses.error++;
+        monitor.metrics.http.requests.errors++;
       }
       
       // Update average response time
-      this.updateAverageResponseTime(duration);
+      monitor.updateAverageResponseTime(duration);
       
       // Update route statistics
-      const route = `${req.method} ${req.route?.path || req.url}`;
-      const routeStats = this.metrics.http.routes.get(route) || {
-        requests: 0, errors: 0, avgTime: 0, totalTime: 0
-      };
+      const route = `${req.method} ${req.url}`;
+      if (!monitor.metrics.http.routes[route]) {
+        monitor.metrics.http.routes[route] = {
+          requests: 0, errors: 0, avgTime: 0, totalTime: 0
+        };
+      }
       
+      const routeStats = monitor.metrics.http.routes[route];
       routeStats.requests++;
       routeStats.totalTime += duration;
       routeStats.avgTime = routeStats.totalTime / routeStats.requests;
@@ -229,10 +233,8 @@ class RealTimeMonitor extends EventEmitter {
         routeStats.errors++;
       }
       
-      this.metrics.http.routes.set(route, routeStats);
-      
       // Log detailed response
-      this.log('info', 'HTTP_REQUEST_END', {
+      monitor.log('info', 'HTTP_REQUEST_END', {
         requestId,
         statusCode: res.statusCode,
         duration,
@@ -241,10 +243,10 @@ class RealTimeMonitor extends EventEmitter {
       });
       
       // Remove from active requests
-      this.activeRequests.delete(requestId);
+      monitor.activeRequests.delete(requestId);
       
       // Add to history
-      this.addToHistory('requests', {
+      monitor.addToHistory('requests', {
         timestamp: endTime,
         duration,
         statusCode: res.statusCode,
@@ -252,10 +254,10 @@ class RealTimeMonitor extends EventEmitter {
       });
       
       // Emit live update
-      this.emit('httpMetrics', this.metrics.http);
+      monitor.emit('httpMetrics', monitor.metrics.http);
       
       return originalSend.call(res, data);
-    }.bind(this);
+    };
     
     return requestId;
   }

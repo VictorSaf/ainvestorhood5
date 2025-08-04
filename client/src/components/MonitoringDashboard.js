@@ -93,23 +93,12 @@ const MonitoringDashboard = ({ onClose }) => {
     memoryUsage: [],
     totalMemory: []
   });
-  const [apiRequests, setApiRequests] = useState([]);
-  const [apiResponses, setApiResponses] = useState([]);
-  const [apiErrors, setApiErrors] = useState([]);
-  const [apiStats, setApiStats] = useState({
-    totalRequests: 0,
-    successfulRequests: 0,
-    failedRequests: 0,
-    averageResponseTime: 0,
-    activeRequests: 0
-  });
   const [scrapySources, setScrapySources] = useState([]);
   const [sourceStats, setSourceStats] = useState(null);
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [showFullSourcesList, setShowFullSourcesList] = useState(false);
   const socketRef = useRef(null);
   const maxDataPoints = 288; // 2 hours at 250ms intervals = 28800, but keep 288 for display
-  const maxApiLogs = 100; // Keep last 100 API events
 
   useEffect(() => {
     // Connect to monitoring WebSocket
@@ -196,43 +185,6 @@ const MonitoringDashboard = ({ onClose }) => {
       setTimeout(() => setStreamingActive(false), 500);
     });
 
-    // Listen for API monitoring events
-    socketRef.current.on('apiRequest', (data) => {
-      setApiRequests(prev => [data, ...prev.slice(0, maxApiLogs - 1)]);
-      setApiStats(prev => ({
-        ...prev,
-        totalRequests: prev.totalRequests + 1,
-        activeRequests: prev.activeRequests + 1
-      }));
-      setLastUpdate(new Date());
-      setStreamingActive(true);
-      setTimeout(() => setStreamingActive(false), 500);
-    });
-
-    socketRef.current.on('apiResponse', (data) => {
-      setApiResponses(prev => [data, ...prev.slice(0, maxApiLogs - 1)]);
-      setApiStats(prev => ({
-        ...prev,
-        activeRequests: Math.max(0, prev.activeRequests - 1),
-        successfulRequests: data.statusCode < 400 ? prev.successfulRequests + 1 : prev.successfulRequests,
-        failedRequests: data.statusCode >= 400 ? prev.failedRequests + 1 : prev.failedRequests,
-        averageResponseTime: ((prev.averageResponseTime * (prev.totalRequests - 1)) + (data.duration || 0)) / prev.totalRequests
-      }));
-      setLastUpdate(new Date());
-      setStreamingActive(true);
-      setTimeout(() => setStreamingActive(false), 500);
-    });
-
-    socketRef.current.on('apiError', (data) => {
-      setApiErrors(prev => [data, ...prev.slice(0, maxApiLogs - 1)]);
-      setApiStats(prev => ({
-        ...prev,
-        failedRequests: prev.failedRequests + 1
-      }));
-      setLastUpdate(new Date());
-      setStreamingActive(true);
-      setTimeout(() => setStreamingActive(false), 500);
-    });
 
     // Fetch initial metrics
     fetchMetrics();
@@ -315,7 +267,7 @@ const MonitoringDashboard = ({ onClose }) => {
     
     setSourcesLoading(true);
     try {
-      const response = await fetch('http://localhost:8080/api/scrapy-sources?limit=100');
+      const response = await fetch('http://localhost:8080/api/rss-sources?limit=100');
       const data = await response.json();
       
       if (data.sources) {
@@ -334,7 +286,7 @@ const MonitoringDashboard = ({ onClose }) => {
     console.log('fetchAllScrapySources called');
     setSourcesLoading(true);
     try {
-      const response = await fetch('http://localhost:8080/api/scrapy-sources?limit=1000');
+      const response = await fetch('http://localhost:8080/api/rss-sources?limit=1000');
       const data = await response.json();
       console.log('Fetched sources data:', data);
       
@@ -1040,11 +992,11 @@ const MonitoringDashboard = ({ onClose }) => {
               </div>
 
               <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Active Period</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Active Sources</h3>
                 <div className="text-3xl font-bold text-purple-600">
-                  {sourceStats?.total_scraping_days || 0}
+                  {sourceStats?.active_sources || 0}
                 </div>
-                <p className="text-sm text-gray-600 mt-2">Days with activity</p>
+                <p className="text-sm text-gray-600 mt-2">Sources with articles</p>
               </div>
 
               <div className="bg-white rounded-lg shadow p-6">
@@ -1052,15 +1004,15 @@ const MonitoringDashboard = ({ onClose }) => {
                 <div className="space-y-1">
                   <div className="text-sm text-gray-600">
                     <span className="font-medium">First:</span> {
-                      sourceStats?.first_article_date 
-                        ? new Date(sourceStats.first_article_date).toLocaleDateString()
+                      sourceStats?.date_range?.first 
+                        ? new Date(sourceStats.date_range.first).toLocaleDateString()
                         : 'N/A'
                     }
                   </div>
                   <div className="text-sm text-gray-600">
                     <span className="font-medium">Last:</span> {
-                      sourceStats?.last_article_date 
-                        ? new Date(sourceStats.last_article_date).toLocaleDateString()
+                      sourceStats?.date_range?.last 
+                        ? new Date(sourceStats.date_range.last).toLocaleDateString()
                         : 'N/A'
                     }
                   </div>
@@ -1072,7 +1024,7 @@ const MonitoringDashboard = ({ onClose }) => {
             <div className="bg-white rounded-lg shadow">
               <div className="p-6 border-b">
                 <h3 className="text-lg font-semibold text-gray-900">RSS Sources from Database</h3>
-                <p className="text-sm text-gray-600 mt-1">All sources used for scraping with article counts from the database</p>
+                <p className="text-sm text-gray-600 mt-1">All RSS sources used for news collection with article counts from the database</p>
               </div>
               <div className="max-h-96 overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-blue-300 scrollbar-track-blue-100 hover:scrollbar-thumb-blue-400">
                 {scrapySources && scrapySources.length > 0 ? (
@@ -1083,19 +1035,19 @@ const MonitoringDashboard = ({ onClose }) => {
                           Domain
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Source URL
+                          RSS Feed URL
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Articles Count
-                        </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Days Active
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           First Scraped
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Last Scraped
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Status
                         </th>
                       </tr>
                     </thead>
@@ -1105,34 +1057,40 @@ const MonitoringDashboard = ({ onClose }) => {
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="flex items-center">
                               <div className="text-sm font-medium text-gray-900">
-                                {source.domain}
+                                {source.name || source.domain}
                               </div>
                             </div>
                           </td>
                           <td className="px-6 py-4">
-                            <div className="text-sm text-gray-500 max-w-xs truncate" title={source.source_url}>
-                              {source.source_url}
+                            <div className="text-sm text-gray-500 max-w-xs truncate" title={source.feed_url}>
+                              {source.feed_url}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="text-sm font-medium text-blue-600">
-                              {source.article_count}
+                              {source.articles_count}
                             </div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {source.days_active}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             {source.first_scraped 
                               ? new Date(source.first_scraped).toLocaleDateString()
-                              : 'N/A'
+                              : 'Never'
                             }
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             {source.last_scraped 
                               ? new Date(source.last_scraped).toLocaleDateString()
-                              : 'N/A'
+                              : 'Never'
                             }
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                              source.articles_count > 0 
+                                ? 'bg-green-100 text-green-800' 
+                                : 'bg-gray-100 text-gray-800'
+                            }`}>
+                              {source.articles_count > 0 ? 'Active' : 'Inactive'}
+                            </span>
                           </td>
                         </tr>
                       ))}
@@ -1140,8 +1098,8 @@ const MonitoringDashboard = ({ onClose }) => {
                   </table>
                 ) : !sourcesLoading ? (
                   <div className="p-8 text-center text-gray-500">
-                    <p>No scraped sources found in database</p>
-                    <p className="text-sm mt-1">Sources will appear here after articles are scraped and saved to the database</p>
+                    <p>No RSS sources found in database</p>
+                    <p className="text-sm mt-1">Sources will appear here after articles are collected and saved to the database</p>
                   </div>
                 ) : null}
               </div>
@@ -1206,44 +1164,83 @@ const MonitoringDashboard = ({ onClose }) => {
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
               <div className="bg-white rounded-lg shadow p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Total Requests</h3>
-                <div className="text-3xl font-bold text-blue-600">{apiStats.totalRequests}</div>
+                <div className="text-3xl font-bold text-blue-600">{metrics.http?.requests?.total || 0}</div>
                 <div className="text-sm text-gray-500 mt-1">All time</div>
               </div>
               <div className="bg-white rounded-lg shadow p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Active Requests</h3>
-                <div className="text-3xl font-bold text-yellow-600">{apiStats.activeRequests}</div>
+                <div className="text-3xl font-bold text-yellow-600">{metrics.http?.requests?.active || 0}</div>
                 <div className="text-sm text-gray-500 mt-1">Currently processing</div>
               </div>
               <div className="bg-white rounded-lg shadow p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Successful</h3>
-                <div className="text-3xl font-bold text-green-600">{apiStats.successfulRequests}</div>
+                <div className="text-3xl font-bold text-green-600">{metrics.http?.responses?.success || 0}</div>
                 <div className="text-sm text-gray-500 mt-1">2xx responses</div>
               </div>
               <div className="bg-white rounded-lg shadow p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Failed</h3>
-                <div className="text-3xl font-bold text-red-600">{apiStats.failedRequests}</div>
+                <div className="text-3xl font-bold text-red-600">{metrics.http?.responses?.error || 0}</div>
                 <div className="text-sm text-gray-500 mt-1">4xx/5xx responses</div>
               </div>
               <div className="bg-white rounded-lg shadow p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Avg Response</h3>
-                <div className="text-3xl font-bold text-purple-600">{Math.round(apiStats.averageResponseTime)}ms</div>
+                <div className="text-3xl font-bold text-purple-600">{Math.round(metrics.http?.requests?.avgResponseTime || 0)}ms</div>
                 <div className="text-sm text-gray-500 mt-1">Response time</div>
               </div>
             </div>
 
-            {/* Recent API Activity */}
+            {/* Route Statistics and Active Requests */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Recent Requests */}
+              {/* Route Statistics */}
               <div className="bg-white rounded-lg shadow">
                 <div className="p-6 border-b">
-                  <h3 className="text-lg font-semibold text-gray-900">Recent Requests</h3>
-                  <p className="text-sm text-gray-600 mt-1">Latest API requests (live)</p>
+                  <h3 className="text-lg font-semibold text-gray-900">Route Statistics</h3>
+                  <p className="text-sm text-gray-600 mt-1">API endpoint usage and performance</p>
                 </div>
                 <div className="max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400">
-                  {apiRequests.length > 0 ? (
+                  {metrics.http?.routes && metrics.http.routes.size > 0 ? (
                     <div className="divide-y">
-                      {apiRequests.slice(0, 50).map((request, index) => (
-                        <div key={`${request.id || request.timestamp}-${index}`} className="p-4 hover:bg-gray-50 transition-colors duration-150">
+                      {Array.from(metrics.http.routes.entries()).map(([route, stats]) => (
+                        <div key={route} className="p-4 hover:bg-gray-50 transition-colors duration-150">
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center space-x-2">
+                                <span className="text-sm font-medium text-gray-900 font-mono">
+                                  {route}
+                                </span>
+                              </div>
+                              <div className="text-xs text-gray-500 mt-1">
+                                {stats.requests} requests • {stats.errors} errors • {Math.round(stats.avgTime)}ms avg
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-sm font-medium text-blue-600">{stats.requests}</div>
+                              <div className="text-xs text-gray-500">requests</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center text-gray-500">
+                      <p>No route statistics yet</p>
+                      <p className="text-sm mt-1">Statistics will appear after API requests are made</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Active Requests */}
+              <div className="bg-white rounded-lg shadow">
+                <div className="p-6 border-b">
+                  <h3 className="text-lg font-semibold text-gray-900">Active Requests</h3>
+                  <p className="text-sm text-gray-600 mt-1">Currently processing requests</p>
+                </div>
+                <div className="max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400">
+                  {metrics.activeRequests?.length > 0 ? (
+                    <div className="divide-y">
+                      {metrics.activeRequests.map((request, index) => (
+                        <div key={`${request.id}-${index}`} className="p-4 hover:bg-gray-50 transition-colors duration-150">
                           <div className="flex items-start justify-between">
                             <div className="flex-1">
                               <div className="flex items-center space-x-2">
@@ -1261,107 +1258,29 @@ const MonitoringDashboard = ({ onClose }) => {
                                 </span>
                               </div>
                               <div className="text-xs text-gray-500 mt-1">
-                                ID: {request.id} • IP: {request.ip}
+                                IP: {request.ip} • Duration: {Date.now() - request.startTime}ms
                               </div>
                             </div>
-                            <span className="text-xs text-gray-500 ml-4">
-                              {new Date(request.timestamp || Date.now()).toLocaleTimeString()}
-                            </span>
+                            <div className="text-right">
+                              <div className="text-sm font-medium text-yellow-600">Processing</div>
+                              <div className="text-xs text-gray-500">
+                                {Math.round((Date.now() - request.startTime) / 1000)}s
+                              </div>
+                            </div>
                           </div>
                         </div>
                       ))}
                     </div>
                   ) : (
                     <div className="p-8 text-center text-gray-500">
-                      <p>No requests yet</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Recent Responses */}
-              <div className="bg-white rounded-lg shadow">
-                <div className="p-6 border-b">
-                  <h3 className="text-lg font-semibold text-gray-900">Recent Responses</h3>
-                  <p className="text-sm text-gray-600 mt-1">Latest API responses (live)</p>
-                </div>
-                <div className="max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400">
-                  {apiResponses.length > 0 ? (
-                    <div className="divide-y">
-                      {apiResponses.slice(0, 50).map((response, index) => (
-                        <div key={`${response.id || response.timestamp}-${index}`} className="p-4 hover:bg-gray-50 transition-colors duration-150">
-                          <div className="flex items-start justify-between">
-                            <div className="flex-1">
-                              <div className="flex items-center space-x-2">
-                                <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                  response.statusCode < 300 ? 'bg-green-100 text-green-800' :
-                                  response.statusCode < 400 ? 'bg-yellow-100 text-yellow-800' :
-                                  response.statusCode < 500 ? 'bg-orange-100 text-orange-800' :
-                                  'bg-red-100 text-red-800'
-                                }`}>
-                                  {response.statusCode}
-                                </span>
-                                <span className="text-sm font-medium text-gray-900 truncate">
-                                  {response.route || response.url}
-                                </span>
-                              </div>
-                              <div className="text-xs text-gray-500 mt-1">
-                                {response.duration}ms • {response.responseSize ? `${(response.responseSize / 1024).toFixed(1)}KB` : 'No size data'}
-                              </div>
-                            </div>
-                            <span className="text-xs text-gray-500 ml-4">
-                              {new Date(response.timestamp || Date.now()).toLocaleTimeString()}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="p-8 text-center text-gray-500">
-                      <p>No responses yet</p>
+                      <p>No active requests</p>
+                      <p className="text-sm mt-1">All requests are being processed quickly</p>
                     </div>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* API Errors */}
-            {apiErrors.length > 0 && (
-              <div className="bg-white rounded-lg shadow">
-                <div className="p-6 border-b">
-                  <h3 className="text-lg font-semibold text-gray-900">Recent Errors</h3>
-                  <p className="text-sm text-gray-600 mt-1">API errors and failures</p>
-                </div>
-                <div className="max-h-[50vh] overflow-y-auto scrollbar-thin scrollbar-thumb-red-300 scrollbar-track-red-100 hover:scrollbar-thumb-red-400">
-                  <div className="divide-y">
-                    {apiErrors.slice(0, 30).map((error, index) => (
-                      <div key={`${error.id || error.timestamp}-${index}`} className="p-4 hover:bg-red-50 transition-colors duration-150">
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <div className="flex items-center space-x-2">
-                              <span className="px-2 py-1 rounded text-xs font-medium bg-red-100 text-red-800">
-                                ERROR
-                              </span>
-                              <span className="text-sm font-medium text-gray-900">
-                                {error.message || error.error}
-                              </span>
-                            </div>
-                            {error.stack && (
-                              <pre className="mt-2 text-xs text-gray-600 bg-gray-50 p-2 rounded overflow-x-auto">
-                                {error.stack}
-                              </pre>
-                            )}
-                          </div>
-                          <span className="text-xs text-gray-500 ml-4">
-                            {new Date(error.timestamp || Date.now()).toLocaleTimeString()}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         )}
 
@@ -1399,21 +1318,27 @@ const MonitoringDashboard = ({ onClose }) => {
                     <div key={index} className="bg-gray-50 rounded-lg p-4">
                       <div className="flex justify-between items-start mb-2">
                         <h3 className="font-semibold text-gray-900 truncate flex-1">
-                          {source.domain}
+                          {source.name || source.domain}
                         </h3>
                         <span className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full ml-2">
-                          {source.article_count} articles
+                          {source.articles_count} articles
                         </span>
                       </div>
                       <p className="text-sm text-gray-600 mb-2 break-all">
-                        {source.source_url}
+                        {source.feed_url}
                       </p>
                       <div className="flex justify-between text-xs text-gray-500">
-                        <span>First: {source.first_scraped ? new Date(source.first_scraped).toLocaleDateString() : 'N/A'}</span>
-                        <span>Last: {source.last_scraped ? new Date(source.last_scraped).toLocaleDateString() : 'N/A'}</span>
+                        <span>First: {source.first_scraped ? new Date(source.first_scraped).toLocaleDateString() : 'Never'}</span>
+                        <span>Last: {source.last_scraped ? new Date(source.last_scraped).toLocaleDateString() : 'Never'}</span>
                       </div>
-                      <div className="mt-1 text-xs text-gray-500">
-                        Active {source.days_active} days
+                      <div className="mt-1 text-xs">
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          source.articles_count > 0 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {source.articles_count > 0 ? 'Active' : 'Inactive'}
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -1421,7 +1346,7 @@ const MonitoringDashboard = ({ onClose }) => {
               )}
               {!sourcesLoading && scrapySources.length === 0 && (
                 <div className="text-center py-8 text-gray-500">
-                  No sources found. Try running the scraper first.
+                  No RSS sources found. Try running news collection first.
                 </div>
               )}
             </div>

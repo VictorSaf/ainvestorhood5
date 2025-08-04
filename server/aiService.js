@@ -27,7 +27,7 @@ class AIService {
     }
     
     this.parser = new Parser({
-      timeout: 10000,
+      timeout: 5000, // Reduced from 10s to 5s
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0; +http://localhost:8080)'
       }
@@ -36,49 +36,39 @@ class AIService {
   }
 
   async searchFinancialNews() {
-    const newsFeeds = [
+    // Focus on most reliable feeds to reduce timeout issues
+    const primaryFeeds = [
       'https://feeds.feedburner.com/zerohedge/feed',
       'https://seekingalpha.com/feed.xml',
       'https://feeds.feedburner.com/TheMotleyFool',
-      'https://www.investing.com/rss/news.rss',
       'https://rss.cnn.com/rss/money_latest.rss',
-      'https://feeds.npr.org/1003/rss.xml',
-      'https://feeds.washingtonpost.com/rss/business',
-      'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
-      'https://feeds.finance.yahoo.com/rss/2.0/headline',
-      // Additional financial news sources
-      'https://feeds.bloomberg.com/markets/news.rss',
       'https://www.marketwatch.com/rss/topstories',
-      'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',
-      'https://feeds.reuters.com/reuters/businessNews',
-      'https://feeds.financial-planning.com/financial-planning/news',
-      'https://feeds.feedburner.com/TheStreet',
-      'https://rss.cnn.com/rss/money_markets.rss',
-      'https://feeds.feedburner.com/InvestorsBusinessDaily-IBDEditorials',
-      // Crypto specific feeds
       'https://cointelegraph.com/rss',
       'https://feeds.feedburner.com/CoinDesk',
-      'https://decrypt.co/feed',
-      // Tech and innovation feeds relevant to finance
-      'https://feeds.feedburner.com/oreilly/radar',
-      'https://feeds.feedburner.com/TechCrunch',
-      'https://rss.cnn.com/rss/money_technology.rss'
+      'https://decrypt.co/feed'
     ];
 
-    const allNews = [];
+    console.log(`Fetching news from ${primaryFeeds.length} primary RSS feeds...`);
     
-    for (const feedUrl of newsFeeds) {
+    // Use Promise.allSettled for parallel processing with timeout handling
+    const feedPromises = primaryFeeds.map(async (feedUrl) => {
       try {
-        console.log(`Fetching news from: ${feedUrl}`);
-        const feed = await this.parser.parseURL(feedUrl);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Feed timeout')), 6000)
+        );
         
-        // Process each item from the feed - take more items for better variety
-        const recentItems = feed.items.slice(0, 20); // Take latest 20 items per feed
+        const feed = await Promise.race([
+          this.parser.parseURL(feedUrl),
+          timeoutPromise
+        ]);
+        
+        // Take only latest 10 items per feed for faster processing
+        const recentItems = feed.items.slice(0, 10);
+        const newsItems = [];
         
         for (const item of recentItems) {
-          // Filter for financial/trading related content
           if (this.isFinancialContent(item.title, item.contentSnippet || item.description)) {
-            allNews.push({
+            newsItems.push({
               title: item.title,
               url: item.link,
               description: item.contentSnippet || item.description || '',
@@ -88,18 +78,28 @@ class AIService {
           }
         }
         
-        // Add small delay between feeds
-        await new Promise(resolve => setTimeout(resolve, 500));
+        console.log(`✅ Fetched ${newsItems.length} articles from ${this.extractSourceFromUrl(feedUrl)}`);
+        return newsItems;
         
       } catch (error) {
-        console.error(`Error fetching feed ${feedUrl}:`, error.message);
+        console.error(`❌ Error fetching feed ${feedUrl}:`, error.message);
+        return [];
       }
-    }
+    });
 
-    // Sort by date and return latest 50 articles
+    const results = await Promise.allSettled(feedPromises);
+    
+    // Flatten successful results
+    const allNews = results
+      .filter(result => result.status === 'fulfilled')
+      .flatMap(result => result.value);
+
+    console.log(`📰 Total articles collected: ${allNews.length}`);
+
+    // Sort by date and return latest 25 articles (reduced for faster processing)
     return allNews
       .sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate))
-      .slice(0, 50);
+      .slice(0, 25);
   }
 
   isFinancialContent(title, description) {

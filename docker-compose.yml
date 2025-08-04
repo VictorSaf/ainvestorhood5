@@ -56,14 +56,13 @@ services:
 
   # Nginx pentru reverse proxy și load balancing (optional)
   nginx:
-    image: nginx:alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
     container_name: ainvestorhood_proxy
     ports:
       - "8081:80"
       - "8443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./ssl:/etc/nginx/ssl:ro  # Pentru SSL certificates
     networks:
       - ainvestorhood_network
     restart: unless-stopped

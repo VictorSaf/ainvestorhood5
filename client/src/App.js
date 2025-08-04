@@ -24,8 +24,8 @@ function App() {
     if (hasApiKey) {
       loadNews();
 
-      // Connect to monitoring WebSocket
-      const newSocket = io('http://localhost:8080');
+      // Connect to monitoring WebSocket - use same origin for Docker compatibility
+      const newSocket = io();
       setSocket(newSocket);
 
       // Refresh news every 30 seconds

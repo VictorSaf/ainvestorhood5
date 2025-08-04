@@ -15,8 +15,8 @@ const LiveFeed = ({ initialNews = [], hasApiKey, onRefresh, onMonitoring, onAIDa
   useEffect(() => {
     if (!hasApiKey) return;
 
-    // Connect to WebSocket
-    const newSocket = io('http://localhost:8080');
+    // Connect to WebSocket - use same origin for Docker compatibility
+    const newSocket = io();
     
     newSocket.on('connect', () => {
       console.log('🔗 Connected to live feed');

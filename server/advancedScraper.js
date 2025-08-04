@@ -7,7 +7,7 @@ class AdvancedScraper {
   constructor() {
     this.browser = null;
     this.userAgents = [];
-    this.requestDelays = [1000, 1500, 2000, 2500, 3000]; // Random delays
+    this.requestDelays = [200, 300, 500, 800, 1000]; // Reduced random delays for faster processing
     this.initUserAgents();
   }
 
@@ -244,6 +244,23 @@ class AdvancedScraper {
 
   // Rotate through different scraping strategies
   async intelligentScrape(url) {
+    // Add timeout wrapper for entire scraping process
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Scraping timeout')), 15000) // 15 second total timeout
+    );
+    
+    try {
+      return await Promise.race([
+        this.attemptScraping(url),
+        timeoutPromise
+      ]);
+    } catch (error) {
+      console.log(`❌ Scraping failed for ${url}: ${error.message}`);
+      return `Content extraction failed for ${url}`;
+    }
+  }
+
+  async attemptScraping(url) {
     const strategies = [
       () => this.scrapeWithAxios(url),
       () => this.scrapeWithPuppeteer(url),
@@ -253,6 +270,7 @@ class AdvancedScraper {
       try {
         const content = await strategy();
         if (content && content.length > 100) {
+          console.log(`✅ Scraped ${content.length} chars from ${url}`);
           return content;
         }
       } catch (error) {
@@ -260,7 +278,7 @@ class AdvancedScraper {
       }
     }
 
-    return `Content extraction failed for ${url}`;
+    throw new Error('All scraping strategies failed');
   }
 }
 

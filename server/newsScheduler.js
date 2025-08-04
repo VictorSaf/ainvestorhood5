@@ -85,8 +85,8 @@ class NewsScheduler {
   startScheduler() {
     if (this.isRunning) return;
 
-    // Run every 1 minute for more frequent updates
-    cron.schedule('*/1 * * * *', async () => {
+    // Run every 2 minutes to reduce server load
+    cron.schedule('*/2 * * * *', async () => {
       if (!this.aiService) {
         console.log('No AI service available, skipping news collection');
         return;
@@ -113,7 +113,7 @@ class NewsScheduler {
     });
 
     this.isRunning = true;
-    console.log('News scheduler started - collecting news every 2 minutes');
+    console.log('News scheduler started - collecting news every 2 minutes (optimized for performance)');
   }
 
   async collectAndAnalyzeNews() {
@@ -154,8 +154,12 @@ class NewsScheduler {
       let processedCount = 0;
       let duplicateCount = 0;
       let errorCount = 0;
+      const maxArticlesPerRun = 10; // Limit articles per collection to speed up processing
 
-      for (const newsItem of newsResults) {
+      console.log(`📊 Processing up to ${maxArticlesPerRun} articles from ${newsResults.length} available`);
+
+      for (let i = 0; i < Math.min(newsResults.length, maxArticlesPerRun); i++) {
+        const newsItem = newsResults[i];
         try {
           console.log(`Processing article: ${newsItem.title}`);
           
