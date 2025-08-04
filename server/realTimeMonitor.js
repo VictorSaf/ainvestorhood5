@@ -196,6 +196,32 @@ class RealTimeMonitor extends EventEmitter {
       userAgent: requestData.userAgent
     });
     
+    // Set timer to warn about slow requests
+    const SLOW_REQUEST_THRESHOLD = 5000; // 5 seconds
+    const slowRequestTimer = setTimeout(() => {
+      if (this.activeRequests.has(requestId)) {
+        this.log('warn', 'SLOW_REQUEST_DETECTED', {
+          requestId,
+          method: req.method,
+          url: req.url,
+          duration: Date.now() - startTime,
+          threshold: SLOW_REQUEST_THRESHOLD
+        });
+        
+        // Emit warning to frontend
+        this.emit('slowRequest', {
+          requestId,
+          method: req.method,
+          url: req.url,
+          duration: Date.now() - startTime,
+          ip: requestData.ip
+        });
+      }
+    }, SLOW_REQUEST_THRESHOLD);
+    
+    // Store timer reference for cleanup
+    requestData.slowRequestTimer = slowRequestTimer;
+    
     // Monitor response
     const originalSend = res.send;
     const monitor = this; // Capture the monitor instance
@@ -242,7 +268,11 @@ class RealTimeMonitor extends EventEmitter {
         route
       });
       
-      // Remove from active requests
+      // Clear slow request timer and remove from active requests
+      const requestData = monitor.activeRequests.get(requestId);
+      if (requestData?.slowRequestTimer) {
+        clearTimeout(requestData.slowRequestTimer);
+      }
       monitor.activeRequests.delete(requestId);
       
       // Add to history

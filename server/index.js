@@ -52,6 +52,38 @@ realTimeMonitor.start();
 setupProcessMonitoring();
 setupFileSystemMonitoring();
 
+// Global API timeout middleware
+const API_TIMEOUT = 30000; // 30 seconds max for any API request
+app.use('/api', (req, res, next) => {
+  // Set request timeout
+  req.setTimeout(API_TIMEOUT, () => {
+    console.warn(`API Request timeout: ${req.method} ${req.url}`);
+    if (!res.headersSent) {
+      res.status(408).json({ 
+        error: 'Request timeout', 
+        message: 'Request took too long to process',
+        timeout: API_TIMEOUT,
+        url: req.url 
+      });
+    }
+  });
+  
+  // Set response timeout
+  res.setTimeout(API_TIMEOUT, () => {
+    console.warn(`API Response timeout: ${req.method} ${req.url}`);
+    if (!res.headersSent) {
+      res.status(408).json({ 
+        error: 'Response timeout', 
+        message: 'Response took too long to send',
+        timeout: API_TIMEOUT,
+        url: req.url 
+      });
+    }
+  });
+  
+  next();
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -158,11 +190,18 @@ app.get('/api/news', async (req, res) => {
   }
 });
 
-// Manually trigger news collection
+// Manually trigger news collection - ASYNC (non-blocking)
 app.post('/api/collect-news', async (req, res) => {
   try {
-    await scheduler.runOnce();
-    res.json({ success: true, message: 'News collection started' });
+    // Return immediately without waiting for completion
+    res.json({ success: true, message: 'News collection started', status: 'running' });
+    
+    // Run collection asynchronously in background
+    scheduler.runOnce().catch(error => {
+      console.error('Background news collection failed:', error);
+      // Emit error to WebSocket clients for real-time updates
+      io.emit('newsCollectionError', { error: error.message, timestamp: new Date().toISOString() });
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -340,7 +379,7 @@ app.get('/api/ollama/models', async (req, res) => {
   }
 });
 
-// Test Ollama model
+// Test Ollama model - WITH TIMEOUT
 app.post('/api/ollama/test', async (req, res) => {
   try {
     const { model } = req.body;
@@ -355,11 +394,30 @@ app.post('/api/ollama/test', async (req, res) => {
     const tokenLimitsStr = await db.getSetting('token_limits');
     const tokenLimits = tokenLimitsStr ? JSON.parse(tokenLimitsStr) : { test: 50 };
     
-    const result = await ollama.testModel(model, "Hello", tokenLimits.test);
+    // Set aggressive timeout for Ollama test (10 seconds max)
+    const OLLAMA_TEST_TIMEOUT = 10000;
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Ollama test timeout')), OLLAMA_TEST_TIMEOUT)
+    );
+    
+    const result = await Promise.race([
+      ollama.testModel(model, "Hello", tokenLimits.test),
+      timeoutPromise
+    ]);
+    
     res.json(result);
   } catch (error) {
     console.error('Error testing Ollama model:', error);
-    res.status(500).json({ error: error.message });
+    if (error.message.includes('timeout')) {
+      res.status(408).json({ 
+        success: false, 
+        error: 'Ollama test timeout', 
+        message: 'Ollama model test took too long. Check if Ollama is running and responsive.',
+        model: req.body.model
+      });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
@@ -427,7 +485,7 @@ app.get('/api/ai-metrics', async (req, res) => {
 });
 
 
-// Test OpenAI model
+// Test OpenAI model - WITH TIMEOUT
 app.post('/api/openai/test', async (req, res) => {
   try {
     const apiKey = await db.getSetting('openai_api_key');
@@ -438,11 +496,30 @@ app.post('/api/openai/test', async (req, res) => {
     const AIService = require('./aiService');
     const aiService = new AIService(apiKey, 'openai');
     
-    const testResult = await aiService.testOpenAI();
+    // Set aggressive timeout for OpenAI test (8 seconds max)
+    const OPENAI_TEST_TIMEOUT = 8000;
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('OpenAI test timeout')), OPENAI_TEST_TIMEOUT)
+    );
+    
+    const testResult = await Promise.race([
+      aiService.testOpenAI(),
+      timeoutPromise
+    ]);
+    
     res.json(testResult);
   } catch (error) {
     console.error('Error testing OpenAI:', error);
-    res.status(500).json({ error: error.message });
+    if (error.message.includes('timeout')) {
+      res.status(408).json({ 
+        success: false, 
+        error: 'OpenAI test timeout', 
+        message: 'OpenAI API test took too long. Check your internet connection and API key.',
+        timeout: 8000
+      });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
@@ -459,25 +536,49 @@ app.post('/api/ai-chat', async (req, res) => {
     let response;
     let tokens = 0;
     
-    if (aiProvider === 'ollama') {
-      const OllamaService = require('./ollamaService');
-      const ollama = new OllamaService();
-      
-      const result = await ollama.chatWithModel(model, message, customPrompt);
-      response = result.response;
-      tokens = result.tokens || 0;
-    } else {
-      const apiKey = await db.getSetting('openai_api_key');
-      if (!apiKey) {
-        return res.status(400).json({ error: 'OpenAI API key not configured' });
+    // Set aggressive timeout for AI requests (15 seconds max)
+    const AI_REQUEST_TIMEOUT = 15000;
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('AI request timeout - response took too long')), AI_REQUEST_TIMEOUT)
+    );
+    
+    try {
+      if (aiProvider === 'ollama') {
+        const OllamaService = require('./ollamaService');
+        const ollama = new OllamaService();
+        
+        const result = await Promise.race([
+          ollama.chatWithModel(model, message, customPrompt),
+          timeoutPromise
+        ]);
+        response = result.response;
+        tokens = result.tokens || 0;
+      } else {
+        const apiKey = await db.getSetting('openai_api_key');
+        if (!apiKey) {
+          return res.status(400).json({ error: 'OpenAI API key not configured' });
+        }
+        
+        const AIService = require('./aiService');
+        const aiService = new AIService(apiKey, 'openai', null, customPrompt);
+        
+        const result = await Promise.race([
+          aiService.chatWithOpenAI(message),
+          timeoutPromise
+        ]);
+        response = result.response;
+        tokens = result.tokens?.total_tokens || 0;
       }
-      
-      const AIService = require('./aiService');
-      const aiService = new AIService(apiKey, 'openai', null, customPrompt);
-      
-      const result = await aiService.chatWithOpenAI(message);
-      response = result.response;
-      tokens = result.tokens?.total_tokens || 0;
+    } catch (timeoutError) {
+      if (timeoutError.message.includes('timeout')) {
+        console.warn(`AI request timeout for ${aiProvider}:`, message.substring(0, 50));
+        return res.status(408).json({ 
+          error: 'Request timeout', 
+          message: 'AI response took too long. Try a shorter message or try again later.',
+          timeout: AI_REQUEST_TIMEOUT 
+        });
+      }
+      throw timeoutError;
     }
     
     const processingTime = Date.now() - startTime;
@@ -497,7 +598,7 @@ app.post('/api/ai-chat', async (req, res) => {
   }
 });
 
-// Stream chat with AI agent
+// Stream chat with AI agent - INSTANT RESPONSE
 app.post('/api/ai-chat-stream', async (req, res) => {
   try {
     const { message, aiProvider, model, customPrompt, socketId } = req.body;
@@ -510,44 +611,70 @@ app.post('/api/ai-chat-stream', async (req, res) => {
       return res.status(400).json({ error: 'Socket ID is required for streaming' });
     }
     
+    // Return immediately - streaming happens via WebSocket
+    res.json({ success: true, message: 'Streaming started', socketId, timestamp: new Date().toISOString() });
+    
     const startTime = Date.now();
     let tokens = 0;
     
-    if (aiProvider === 'ollama') {
-      const OllamaService = require('./ollamaService');
-      const ollama = new OllamaService();
-      
-      const result = await ollama.streamChatWithModel(model, message, customPrompt, (chunk, isDone) => {
-        if (isDone) {
-          // Completion will be handled after the promise resolves
-          // Just notify that streaming is done
-        } else if (chunk) {
-          // Send chunk event
-          io.emit('ai-chat-chunk', { 
-            socketId, 
-            chunk, 
-            timestamp: new Date().toISOString() 
-          });
+    // Set aggressive timeout for streaming (20 seconds max)
+    const STREAM_TIMEOUT = 20000;
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Streaming timeout')), STREAM_TIMEOUT)
+    );
+    
+    try {
+      if (aiProvider === 'ollama') {
+        const OllamaService = require('./ollamaService');
+        const ollama = new OllamaService();
+        
+        const result = await Promise.race([
+          ollama.streamChatWithModel(model, message, customPrompt, (chunk, isDone) => {
+            if (isDone) {
+              // Completion will be handled after the promise resolves
+            } else if (chunk) {
+              // Send chunk event
+              io.emit('ai-chat-chunk', { 
+                socketId, 
+                chunk, 
+                timestamp: new Date().toISOString() 
+              });
+            }
+          }),
+          timeoutPromise
+        ]);
+        
+        tokens = result.tokens || 0;
+        
+        if (!result.success) {
+          throw new Error(result.error || 'Streaming failed');
         }
-      });
+        
+        // Send completion event after we have the result
+        const processingTime = Date.now() - startTime;
+        io.emit('ai-chat-complete', { 
+          socketId, 
+          processingTime, 
+          tokens 
+        });
       
-      tokens = result.tokens || 0;
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Streaming failed');
+      } else {
+        // OpenAI streaming not implemented - send error via WebSocket
+        io.emit('ai-chat-error', { 
+          socketId, 
+          error: 'Streaming not yet implemented for OpenAI',
+          timestamp: new Date().toISOString() 
+        });
+        return; // Exit early since we already sent response
       }
-      
-      // Send completion event after we have the result
-      const processingTime = Date.now() - startTime;
-      io.emit('ai-chat-complete', { 
+    } catch (error) {
+      console.error('Streaming error:', error);
+      // Send error via WebSocket instead of HTTP response
+      io.emit('ai-chat-error', { 
         socketId, 
-        processingTime, 
-        tokens 
+        error: error.message.includes('timeout') ? 'Streaming timeout - response took too long' : error.message,
+        timestamp: new Date().toISOString() 
       });
-      
-    } else {
-      // For OpenAI, we can implement streaming later if needed
-      return res.status(400).json({ error: 'Streaming not yet implemented for OpenAI' });
     }
     
     const processingTime = Date.now() - startTime;
@@ -749,6 +876,12 @@ realTimeMonitor.on('scrapyMetrics', (data) => {
 
 realTimeMonitor.on('log', (logEntry) => {
   io.emit('log', logEntry);
+});
+
+// Forward slow request warnings to WebSocket clients
+realTimeMonitor.on('slowRequest', (data) => {
+  io.emit('slowRequest', data);
+  console.warn(`🐌 SLOW REQUEST: ${data.method} ${data.url} - ${data.duration}ms`);
 });
 
 // Catch all handler for React app (only in production) - MUST BE LAST!
