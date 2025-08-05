@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
+import { flushSync } from 'react-dom';
 import io from 'socket.io-client';
 import AIConfigurationTab from './AIConfigurationTab';
 import ThemeEditor from './ThemeEditor';
@@ -91,18 +92,26 @@ const MonitoringDashboard = ({ onClose }) => {
   const [showErrorModal, setShowErrorModal] = useState(false);
   const [selectedErrors, setSelectedErrors] = useState([]);
   const [streamingActive, setStreamingActive] = useState(false);
-  const [chartData, setChartData] = useState({
-    cpu: [],
-    memoryUsage: [],
-    totalMemory: [],
-    memoryGB: [] // Memory usage in GB
+  // Combine chart data and scales in single state for atomic updates
+  const [chartState, setChartState] = useState({
+    data: {
+      cpu: [],
+      memoryUsage: [],
+      totalMemory: [],
+      memoryGB: []
+    },
+    scales: {
+      cpu: { min: 0, max: 100 },
+      memory: { min: 0, max: 100 },
+      memoryGB: { min: 0, max: 36 }
+    }
   });
+  
+  // Derived values for backward compatibility
+  const chartData = chartState.data;
+  const chartScales = chartState.scales;
+  
   const [historicalDataLoaded, setHistoricalDataLoaded] = useState(false);
-  const [chartScales, setChartScales] = useState({
-    cpu: { min: 50, max: 60 }, // TEST: Force small range to see if it works
-    memory: { min: 90, max: 95 }, // TEST: Force small range to see if it works
-    memoryGB: { min: 28, max: 32 } // TEST: Force small range to see if it works
-  });
 
   const [scrapySources, setScrapySources] = useState([]);
   const [sourceStats, setSourceStats] = useState(null);
@@ -153,7 +162,13 @@ const MonitoringDashboard = ({ onClose }) => {
 
       // Update chart data with new real-time point
       const now = new Date();
-      setChartData(prev => {
+      
+      console.log('🔴 STEP 2: About to call setChartState with flushSync');
+      
+      flushSync(() => {
+        setChartState(prev => {
+        console.log('🔴 STEP 3: Inside setChartState callback, prev scales:', prev.scales);
+        
         // Validate incoming values to prevent anomalous data
         let cpuUsage = data.cpu?.usage || 0;
         let memoryPercentage = data.memory?.percentage || 0;
@@ -165,8 +180,8 @@ const MonitoringDashboard = ({ onClose }) => {
         memoryPercentage = Math.max(0, Math.min(100, memoryPercentage));
         
         // If we have previous data, check for anomalous drops in memory
-        if (prev.memoryUsage.length > 0) {
-          const lastMemoryValue = prev.memoryUsage[prev.memoryUsage.length - 1]?.y || 0;
+        if (prev.data.memoryUsage.length > 0) {
+          const lastMemoryValue = prev.data.memoryUsage[prev.data.memoryUsage.length - 1]?.y || 0;
           const difference = Math.abs(memoryPercentage - lastMemoryValue);
           
           // If the difference is > 50%, it's likely anomalous - use previous value instead
@@ -182,8 +197,8 @@ const MonitoringDashboard = ({ onClose }) => {
         }
         
         // Similar check for CPU usage
-        if (prev.cpu.length > 0) {
-          const lastCpuValue = prev.cpu[prev.cpu.length - 1]?.y || 0;
+        if (prev.data.cpu.length > 0) {
+          const lastCpuValue = prev.data.cpu[prev.data.cpu.length - 1]?.y || 0;
           const cpuDifference = Math.abs(cpuUsage - lastCpuValue);
           
           // If CPU jumps by more than 80%, it might be anomalous
@@ -198,16 +213,16 @@ const MonitoringDashboard = ({ onClose }) => {
           }
         }
         
-        const newCpuData = [...prev.cpu, { x: now.toISOString(), y: cpuUsage }]; // Use validated CPU
-        const newMemoryUsageData = [...prev.memoryUsage, { 
+        const newCpuData = [...prev.data.cpu, { x: now.toISOString(), y: cpuUsage }]; // Use validated CPU
+        const newMemoryUsageData = [...prev.data.memoryUsage, { 
           x: now.toISOString(), 
           y: memoryPercentage // Use validated memory percentage
         }];
-        const newTotalMemoryData = [...prev.totalMemory, { 
+        const newTotalMemoryData = [...prev.data.totalMemory, { 
           x: now.toISOString(), 
           y: data.memory?.total ? (data.memory.total / (1024 * 1024 * 1024)) : 36 // Convert to GB or use default
         }];
-        const newMemoryGBData = [...prev.memoryGB, {
+        const newMemoryGBData = [...prev.data.memoryGB, {
           x: now.toISOString(),
           y: data.memory?.used ? (data.memory.used / (1024 * 1024 * 1024)) : 0 // Convert used memory to GB
         }];
@@ -220,31 +235,35 @@ const MonitoringDashboard = ({ onClose }) => {
           memoryGB: newMemoryGBData.slice(-maxDataPoints)
         };
         
-        // Enhanced debugging for memory chart issue
-        console.log('📊 Chart data updated:', {
-          cpuPoints: updatedData.cpu.length,
-          lastCpuValue: updatedData.cpu[updatedData.cpu.length - 1]?.y,
-          memoryPoints: updatedData.memoryUsage.length,
-          lastMemoryValue: updatedData.memoryUsage[updatedData.memoryUsage.length - 1]?.y,
-          receivedMemoryPercentage: data.memory?.percentage,
-          validatedMemoryPercentage: memoryPercentage,
-          previousMemoryValues: prev.memoryUsage.slice(-3).map(p => p.y), // Last 3 values
-          newMemoryValues: updatedData.memoryUsage.slice(-3).map(p => p.y) // Last 3 values after update
+        
+        // Calculate new scales and return atomic state update
+        const newCpuScale = calculateDynamicScale(updatedData.cpu);
+        const newMemoryScale = calculateDynamicScale(updatedData.memoryUsage);
+        const newMemoryGBScale = calculateDynamicScaleGB(updatedData.memoryGB);
+        
+        console.log('🔴 STEP 4: Calculated new scales:', {
+          cpu: newCpuScale,
+          memory: newMemoryScale,
+          memoryGB: newMemoryGBScale
         });
         
-        // Extra debug for memory value flow
-        console.log('🔍 MEMORY VALUE FLOW:', {
-          original: data.memory?.percentage,
-          sanitized: Math.max(0, Math.min(100, data.memory?.percentage || 0)),
-          final: memoryPercentage,
-          willBeDisplayed: updatedData.memoryUsage[updatedData.memoryUsage.length - 1]?.y
+        const newState = {
+          data: updatedData,
+          scales: {
+            cpu: newCpuScale,
+            memory: newMemoryScale,
+            memoryGB: newMemoryGBScale
+          }
+        };
+        
+        console.log('🔴 STEP 5: Returning new state from setChartState');
+        
+        // Return combined state update - single atomic operation
+        return newState;
         });
-        
-        // Update scales after data changes
-        updateChartScales(updatedData);
-        
-        return updatedData;
       });
+      
+      console.log('🔴 STEP 6: setChartState with flushSync completed');
     });
 
     socketRef.current.on('httpMetrics', (data) => {
@@ -413,10 +432,20 @@ const MonitoringDashboard = ({ onClose }) => {
           }
         });
         
-        setChartData(historicalChartData);
+        // Calculate scales and set combined state atomically
+        const historicalCpuScale = calculateDynamicScale(historicalChartData.cpu);
+        const historicalMemoryScale = calculateDynamicScale(historicalChartData.memoryUsage);
+        const historicalMemoryGBScale = calculateDynamicScaleGB(historicalChartData.memoryGB);
         
-        // Update scales with historical data
-        updateChartScales(historicalChartData);
+        // Set combined state in single atomic operation
+        setChartState({
+          data: historicalChartData,
+          scales: {
+            cpu: historicalCpuScale,
+            memory: historicalMemoryScale,
+            memoryGB: historicalMemoryGBScale
+          }
+        });
         
         setHistoricalDataLoaded(true);
         console.log('✅ Historical data loaded successfully');
@@ -460,27 +489,39 @@ const MonitoringDashboard = ({ onClose }) => {
     const minValue = Math.min(...values);
     const maxValue = Math.max(...values);
     
-    // Add padding
+    // Add padding but keep natural scale
     const range = maxValue - minValue;
-    const paddingAmount = Math.max(range * (padding / 100), 5); // Minimum 5% padding
+    const paddingAmount = Math.max(range * (padding / 100), 2); // Minimum 2% padding
     
     let min = minValue - paddingAmount;
     let max = maxValue + paddingAmount;
     
     // Ensure minimum range for readability
-    if (max - min < 10) {
+    if (max - min < 8) {
       const center = (max + min) / 2;
-      min = center - 5;
-      max = center + 5;
+      min = center - 4;
+      max = center + 4;
     }
     
-    // Keep within reasonable bounds
-    min = Math.max(0, min);
-    max = Math.min(100, max);
+    // IMPORTANT: Don't force toward zero - only limit if values are actually outside bounds
+    // Only apply 0 limit if the calculated min is very close to 0 (within 5%)
+    if (min >= 0 && min <= 5 && minValue >= 0) {
+      min = 0;
+    } else if (min < 0 && minValue >= 0) {
+      min = Math.max(0, minValue - 2); // Keep natural lower bound
+    }
+    
+    // Only apply 100% limit for percentage values if max is very close to 100
+    if (max <= 100 && max >= 95 && maxValue <= 100) {
+      max = 100;
+    } else if (max > 100 && maxValue <= 100) {
+      max = Math.min(100, maxValue + 2); // Keep natural upper bound
+    }
     
     // Round to nice numbers
-    min = Math.floor(min / 5) * 5;
-    max = Math.ceil(max / 5) * 5;
+    min = Math.floor(min);
+    max = Math.ceil(max);
+    
     
     return { min, max };
   };
@@ -499,23 +540,32 @@ const MonitoringDashboard = ({ onClose }) => {
     const minValue = Math.min(...values);
     const maxValue = Math.max(...values);
     
-    // Add padding
+    // Add padding but preserve natural scale
     const range = maxValue - minValue;
-    const paddingAmount = Math.max(range * (padding / 100), 2); // Minimum 2GB padding
+    const paddingAmount = Math.max(range * (padding / 100), 1); // Minimum 1GB padding
     
     let min = minValue - paddingAmount;
     let max = maxValue + paddingAmount;
     
     // Ensure minimum range
-    if (max - min < 4) {
+    if (max - min < 3) {
       const center = (max + min) / 2;
-      min = center - 2;
-      max = center + 2;
+      min = center - 1.5;
+      max = center + 1.5;
     }
     
-    // Keep within reasonable bounds
-    min = Math.max(0, min);
-    max = Math.min(40, max);
+    // IMPORTANT: Don't force toward zero - only limit if values are very low
+    // Only apply 0 limit if the calculated min is very close to 0 (within 2GB) and all values are low
+    if (min >= 0 && min <= 2 && minValue <= 5) {
+      min = 0;
+    } else if (min < 0) {
+      min = Math.max(0, minValue - 1); // Keep natural lower bound
+    }
+    
+    // Don't impose upper limit unless values are close to system max
+    if (max > 40) {
+      max = Math.min(40, maxValue + 2);
+    }
     
     // Round to nice numbers (0.5GB increments)
     min = Math.floor(min * 2) / 2;
@@ -524,20 +574,127 @@ const MonitoringDashboard = ({ onClose }) => {
     return { min, max };
   };
 
-  // Update chart scales when data changes
-  const updateChartScales = (newChartData) => {
-    if (!newChartData) return;
-    
-    const newCpuScale = calculateDynamicScale(newChartData.cpu);
-    const newMemoryScale = calculateDynamicScale(newChartData.memoryUsage);
-    const newMemoryGBScale = calculateDynamicScaleGB(newChartData.memoryGB);
-    
-    setChartScales({
-      cpu: newCpuScale,
-      memory: newMemoryScale,
-      memoryGB: newMemoryGBScale
-    });
-  };
+
+  // Memoized chart options to prevent unnecessary re-renders
+  const cpuChartOptions = useMemo(() => {
+    console.log('🔵 CHART RENDER: CPU options recalculated with scales:', chartScales.cpu);
+    return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false, // DISABLE ALL ANIMATIONS TO PREVENT FLICKERING
+    transitions: {
+      active: { animation: { duration: 0 } },
+      resize: { animation: { duration: 0 } },
+      show: { animation: { duration: 0 } },
+      hide: { animation: { duration: 0 } }
+    },
+    plugins: {
+      legend: { display: false },
+      title: { display: false },
+    },
+    scales: {
+      x: {
+        type: 'time',
+        time: {
+          unit: 'minute',
+          displayFormats: { minute: 'HH:mm' }
+        },
+        ticks: { maxTicksLimit: 6 },
+      },
+      y: {
+        min: chartScales.cpu.min,
+        max: chartScales.cpu.max,
+        ticks: {
+          callback: function(value) {
+            return value + '%';
+          },
+        },
+      },
+    },
+    elements: {
+      line: { tension: 0.4 },
+    },
+    };
+  }, [chartScales.cpu.min, chartScales.cpu.max]);
+
+  const memoryChartOptions = useMemo(() => {
+    console.log('🔵 CHART RENDER: Memory options recalculated with scales:', chartScales.memory);
+    return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false, // DISABLE ALL ANIMATIONS TO PREVENT FLICKERING
+    transitions: {
+      active: { animation: { duration: 0 } },
+      resize: { animation: { duration: 0 } },
+      show: { animation: { duration: 0 } },
+      hide: { animation: { duration: 0 } }
+    },
+    plugins: {
+      legend: { display: false },
+      title: { display: false },
+    },
+    scales: {
+      x: {
+        type: 'time',
+        time: {
+          unit: 'minute',
+          displayFormats: { minute: 'HH:mm' }
+        },
+        ticks: { maxTicksLimit: 6 },
+      },
+      y: {
+        min: chartScales.memory.min,
+        max: chartScales.memory.max,
+        ticks: {
+          callback: function(value) {
+            return value + '%';
+          },
+        },
+      },
+    },
+    elements: {
+      line: { tension: 0.4 },
+    },
+    };
+  }, [chartScales.memory.min, chartScales.memory.max]);
+
+  const memoryGBChartOptions = useMemo(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false, // DISABLE ALL ANIMATIONS TO PREVENT FLICKERING
+    transitions: {
+      active: { animation: { duration: 0 } },
+      resize: { animation: { duration: 0 } },
+      show: { animation: { duration: 0 } },
+      hide: { animation: { duration: 0 } }
+    },
+    plugins: {
+      legend: { display: false },
+      title: { display: false },
+    },
+    scales: {
+      x: {
+        type: 'time',
+        time: {
+          unit: 'minute',
+          displayFormats: { minute: 'HH:mm' }
+        },
+        ticks: { maxTicksLimit: 6 },
+      },
+      y: {
+        min: chartScales.memoryGB.min,
+        max: chartScales.memoryGB.max,
+        ticks: {
+          callback: function(value) {
+            return value.toFixed(1) + ' GB';
+          },
+        },
+      },
+    },
+    elements: {
+      line: { tension: 0.4 },
+    },
+  }), [chartScales.memoryGB.min, chartScales.memoryGB.max]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -860,6 +1017,7 @@ const MonitoringDashboard = ({ onClose }) => {
                 </h3>
                 <div className="h-64">
                   <Line
+                    key={`cpu-${chartScales.cpu.min}-${chartScales.cpu.max}-${chartData.cpu.length}`}
                     data={{
                       datasets: [
                         {
@@ -873,46 +1031,7 @@ const MonitoringDashboard = ({ onClose }) => {
                         },
                       ],
                     }}
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: false,
-                      plugins: {
-                        legend: {
-                          display: false,
-                        },
-                        title: {
-                          display: false,
-                        },
-                      },
-                      scales: {
-                        x: {
-                          type: 'time',
-                          time: {
-                            unit: 'minute',
-                            displayFormats: {
-                              minute: 'HH:mm'
-                            }
-                          },
-                          ticks: {
-                            maxTicksLimit: 6,
-                          },
-                        },
-                        y: {
-                          min: chartScales.cpu.min,
-                          max: chartScales.cpu.max,
-                          ticks: {
-                            callback: function(value) {
-                              return value + '%';
-                            },
-                          },
-                        },
-                      },
-                      elements: {
-                        line: {
-                          tension: 0.4,
-                        },
-                      },
-                    }}
+                    options={cpuChartOptions}
                   />
                 </div>
               </div>
@@ -924,6 +1043,7 @@ const MonitoringDashboard = ({ onClose }) => {
                 </h3>
                 <div className="h-64">
                   <Line
+                    key={`memory-${chartScales.memory.min}-${chartScales.memory.max}-${chartData.memoryUsage.length}`}
                     data={{
                       datasets: [
                         {
@@ -937,46 +1057,7 @@ const MonitoringDashboard = ({ onClose }) => {
                         },
                       ],
                     }}
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: false,
-                      plugins: {
-                        legend: {
-                          display: false,
-                        },
-                        title: {
-                          display: false,
-                        },
-                      },
-                      scales: {
-                        x: {
-                          type: 'time',
-                          time: {
-                            unit: 'minute',
-                            displayFormats: {
-                              minute: 'HH:mm'
-                            }
-                          },
-                          ticks: {
-                            maxTicksLimit: 6,
-                          },
-                        },
-                        y: {
-                          min: chartScales.memory.min,
-                          max: chartScales.memory.max,
-                          ticks: {
-                            callback: function(value) {
-                              return value + '%';
-                            },
-                          },
-                        },
-                      },
-                      elements: {
-                        line: {
-                          tension: 0.4,
-                        },
-                      },
-                    }}
+                    options={memoryChartOptions}
                   />
                 </div>
               </div>
@@ -988,6 +1069,7 @@ const MonitoringDashboard = ({ onClose }) => {
                 </h3>
                 <div className="h-64">
                   <Line
+                    key={`memoryGB-${chartScales.memoryGB.min}-${chartScales.memoryGB.max}-${chartData.memoryGB.length}`}
                     data={{
                       datasets: [
                         {
@@ -1001,46 +1083,7 @@ const MonitoringDashboard = ({ onClose }) => {
                         },
                       ],
                     }}
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: false,
-                      plugins: {
-                        legend: {
-                          display: false,
-                        },
-                        title: {
-                          display: false,
-                        },
-                      },
-                      scales: {
-                        x: {
-                          type: 'time',
-                          time: {
-                            unit: 'minute',
-                            displayFormats: {
-                              minute: 'HH:mm'
-                            }
-                          },
-                          ticks: {
-                            maxTicksLimit: 6,
-                          },
-                        },
-                        y: {
-                          min: chartScales.memoryGB.min,
-                          max: chartScales.memoryGB.max,
-                          ticks: {
-                            callback: function(value) {
-                              return value.toFixed(1) + ' GB';
-                            },
-                          },
-                        },
-                      },
-                      elements: {
-                        line: {
-                          tension: 0.4,
-                        },
-                      },
-                    }}
+                    options={memoryGBChartOptions}
                   />
                 </div>
               </div>
