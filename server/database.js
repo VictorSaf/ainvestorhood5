@@ -41,10 +41,27 @@ class DatabaseWrapper {
           // Ignore error if column already exists
         });
 
+        // System metrics table for monitoring data
+        this.db.run(`CREATE TABLE IF NOT EXISTS system_metrics (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          cpu_usage REAL NOT NULL,
+          memory_usage REAL NOT NULL,
+          memory_percentage REAL NOT NULL,
+          memory_total INTEGER NOT NULL,
+          memory_free INTEGER NOT NULL,
+          uptime INTEGER NOT NULL,
+          load_average_1 REAL,
+          load_average_5 REAL,
+          load_average_15 REAL,
+          timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
         // Index for faster queries
         this.db.run(`CREATE INDEX IF NOT EXISTS idx_created_at ON news_articles(created_at)`);
         this.db.run(`CREATE INDEX IF NOT EXISTS idx_published_at ON news_articles(published_at)`);
-        this.db.run(`CREATE INDEX IF NOT EXISTS idx_content_hash ON news_articles(content_hash)`, (err) => {
+        this.db.run(`CREATE INDEX IF NOT EXISTS idx_content_hash ON news_articles(content_hash)`);
+        this.db.run(`CREATE INDEX IF NOT EXISTS idx_system_metrics_timestamp ON system_metrics(timestamp)`, (err) => {
           if (err) {
             reject(err);
           } else {
@@ -159,6 +176,87 @@ class DatabaseWrapper {
   cleanVeryOldArticles() {
     return new Promise((resolve, reject) => {
       this.db.run(`DELETE FROM news_articles WHERE created_at < datetime('now', '-6 hours')`, function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this.changes);
+        }
+      });
+    });
+  }
+
+  // System metrics methods
+  saveSystemMetrics(metrics) {
+    return new Promise((resolve, reject) => {
+      const {
+        cpu,
+        memory,
+        uptime,
+        loadAverage
+      } = metrics;
+
+      this.db.run(`INSERT INTO system_metrics (
+        cpu_usage,
+        memory_usage,
+        memory_percentage,
+        memory_total,
+        memory_free,
+        uptime,
+        load_average_1,
+        load_average_5,
+        load_average_15,
+        timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`, [
+        cpu.usage,
+        memory.used,
+        memory.percentage,
+        memory.total,
+        memory.free,
+        uptime,
+        loadAverage[0] || null,
+        loadAverage[1] || null,
+        loadAverage[2] || null
+      ], function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this.lastID);
+        }
+      });
+    });
+  }
+
+  getSystemMetrics(hours = 2) {
+    return new Promise((resolve, reject) => {
+      this.db.all(`SELECT * FROM system_metrics 
+                   WHERE timestamp >= datetime('now', '-${hours} hours')
+                   ORDER BY timestamp ASC`, (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(rows);
+        }
+      });
+    });
+  }
+
+  getLatestSystemMetrics() {
+    return new Promise((resolve, reject) => {
+      this.db.get(`SELECT * FROM system_metrics 
+                   ORDER BY timestamp DESC 
+                   LIMIT 1`, (err, row) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(row);
+        }
+      });
+    });
+  }
+
+  cleanOldSystemMetrics() {
+    return new Promise((resolve, reject) => {
+      this.db.run(`DELETE FROM system_metrics WHERE timestamp < datetime('now', '-7 days')`, function(err) {
         if (err) {
           reject(err);
         } else {

@@ -1,11 +1,13 @@
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const path = require('path');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
 const Database = require('./database');
 const NewsScheduler = require('./newsScheduler');
+const UnifiedScrapingService = require('./unifiedScrapingService');
 const monitoring = require('./monitoring');
 const liveStream = require('./liveStream');
 const realTimeMonitor = require('./realTimeMonitor');
@@ -35,6 +37,10 @@ const io = new Server(server, {
 // Initialize database and scheduler
 const db = new Database();
 const scheduler = new NewsScheduler();
+const scrapingService = new UnifiedScrapingService();
+
+// Make scheduler globally accessible for API endpoints
+global.newsScheduler = scheduler;
 
 // Setup monitoring for services
 setupDatabaseMonitoring(db);
@@ -44,6 +50,9 @@ setupScrapyMonitoring(scheduler.scrapyService);
 // Initialize monitoring and live stream
 monitoring.init(io);
 liveStream.init(io);
+
+// Setup database for real-time monitoring
+realTimeMonitor.setDatabase(db);
 
 // Start real-time monitoring
 realTimeMonitor.start();
@@ -115,13 +124,16 @@ app.use('/api', (req, res, next) => {
 
 // Middleware
 app.use(cors());
+app.use(compression()); // Add gzip compression for better performance
 app.use(express.json());
 app.use(httpMonitoringMiddleware);
 
-// Serve static files from React build (only in production)
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/build')));
-}
+// Serve static files from React build with caching
+app.use(express.static(path.join(__dirname, '../client/build'), {
+  maxAge: '1d', // Cache static files for 1 day
+  etag: true,
+  lastModified: true
+}));
 
 // API Routes
 
@@ -330,6 +342,127 @@ app.get('/api/monitor/logs', (req, res) => {
   }
 });
 
+// Scraping configuration endpoints
+app.get('/api/scraping/methods', (req, res) => {
+  try {
+    const methods = scrapingService.getAvailableMethods();
+    const currentMethod = scrapingService.getScrapingMethod();
+    const stats = scrapingService.getStats();
+    
+    res.json({
+      currentMethod,
+      availableMethods: methods,
+      stats
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/scraping/method', async (req, res) => {
+  try {
+    const { method } = req.body;
+    
+    if (!method) {
+      return res.status(400).json({ error: 'Method is required' });
+    }
+    
+    const success = scrapingService.setScrapingMethod(method);
+    
+    if (!success) {
+      return res.status(400).json({ 
+        error: 'Invalid scraping method',
+        availableMethods: scrapingService.getAvailableMethods().map(m => m.name)
+      });
+    }
+    
+    // Save to database
+    await db.setSetting('scraping_method', method);
+    
+    // Trigger immediate news collection with new method
+    console.log(`📰 Triggering immediate news collection with ${scrapingService.getDisplayName(method)}`);
+    
+    // Get the news scheduler instance and trigger collection
+    if (global.newsScheduler && global.newsScheduler.aiService) {
+      // Don't await - let it run in background
+      global.newsScheduler.collectAndAnalyzeNews().catch(error => {
+        console.error('Error in triggered news collection:', error);
+      });
+    }
+
+    res.json({
+      success: true,
+      currentMethod: method,
+      message: `Scraping method changed to ${scrapingService.getDisplayName(method)}. Collecting news with new method...`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/scraping/test', async (req, res) => {
+  try {
+    const { method, feeds } = req.body;
+    
+    if (!method) {
+      return res.status(400).json({ error: 'Method is required' });
+    }
+    
+    // Different test feeds for each method to show real performance differences
+    const methodFeeds = {
+      'feedparser': [
+        'https://feeds.feedburner.com/zerohedge/feed',
+        'https://seekingalpha.com/feed.xml'
+      ],
+      'cheerio': [
+        'https://cointelegraph.com/rss',
+        'https://www.marketwatch.com/rss/topstories',
+        'https://feeds.feedburner.com/TheMotleyFool'
+      ],
+      'puppeteer': [
+        'https://feeds.reuters.com/reuters/topNews',
+        'https://rss.cnn.com/rss/edition.rss'
+      ],
+      'scrapy': [
+        'https://feeds.bbci.co.uk/news/business/rss.xml',
+        'https://www.ft.com/rss/home/us',
+        'https://feeds.feedburner.com/time/topstories'
+      ],
+      'beautifulsoup': [
+        'https://feeds.washingtonpost.com/rss/business',
+        'https://feeds.npr.org/1001/rss.xml'
+      ]
+    };
+    
+    const testFeeds = feeds || methodFeeds[method] || methodFeeds['feedparser'];
+    
+    // Temporarily change method for testing
+    const originalMethod = scrapingService.getScrapingMethod();
+    scrapingService.setScrapingMethod(method);
+    
+    const startTime = Date.now();
+    const articles = await scrapingService.scrapeRSSFeeds(testFeeds);
+    const duration = Date.now() - startTime;
+    
+    // Restore original method
+    scrapingService.setScrapingMethod(originalMethod);
+    
+    res.json({
+      success: true,
+      method,
+      articles: articles.slice(0, 5), // Return only first 5 for testing
+      totalArticles: articles.length,
+      duration,
+      testFeeds
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      method: req.body.method
+    });
+  }
+});
+
 // Get statistics
 app.get('/api/stats', async (req, res) => {
   try {
@@ -374,6 +507,91 @@ app.use((error, req, res, next) => {
 app.get('/api/monitoring', (req, res) => {
   const healthStatus = monitoring.getHealthStatus();
   res.json(healthStatus);
+});
+
+// Get real-time system metrics
+app.get('/api/monitoring/system', (req, res) => {
+  res.json({
+    system: realTimeMonitor.metrics.system,
+    app: realTimeMonitor.metrics.app,
+    history: {
+      cpu: realTimeMonitor.performanceHistory.cpu.slice(-60), // Last 60 points
+      memory: realTimeMonitor.performanceHistory.memory.slice(-60)
+    }
+  });
+});
+
+// Get system metrics from database
+app.get('/api/monitoring/system/history', async (req, res) => {
+  try {
+    const hours = parseInt(req.query.hours) || 2;
+    const metrics = await db.getSystemMetrics(hours);
+    
+    res.json({
+      success: true,
+      metrics: metrics,
+      count: metrics.length,
+      hours: hours
+    });
+  } catch (error) {
+    console.error('Error fetching system metrics from database:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get latest system metrics from database
+app.get('/api/monitoring/system/latest', async (req, res) => {
+  try {
+    const latest = await db.getLatestSystemMetrics();
+    
+    res.json({
+      success: true,
+      metrics: latest
+    });
+  } catch (error) {
+    console.error('Error fetching latest system metrics:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Debug endpoint to test Ollama analysis directly
+app.post('/api/debug/ollama-analysis', async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    const OllamaService = require('./ollamaService');
+    const ollama = new OllamaService();
+    
+    const testTitle = title || "Apple Reports Strong Q3 Earnings";
+    const testContent = content || "Apple Inc. announced strong third-quarter earnings with revenue of $81.8 billion, beating analyst expectations. iPhone sales were particularly strong in emerging markets.";
+    
+    // Get current token limits
+    const tokenLimitsStr = await db.getSetting('token_limits');
+    const tokenLimits = tokenLimitsStr ? JSON.parse(tokenLimitsStr) : { analysis: 1200 };
+    
+    const result = await ollama.analyzeNewsWithOllama(
+      'llama2-uncensored:latest',
+      'Analyze this financial news article and provide a JSON response with summary, instrument_type, instrument_name, recommendation (BUY/SELL/HOLD), and confidence_score (1-100).',
+      testTitle,
+      testContent,
+      'https://example.com',
+      tokenLimits.analysis
+    );
+    
+    res.json({
+      success: true,
+      input: { title: testTitle, content: testContent },
+      tokenLimit: tokenLimits.analysis,
+      result
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message, stack: error.stack });
+  }
 });
 
 // Get Ollama models
@@ -460,7 +678,7 @@ app.get('/api/ai-config', async (req, res) => {
     const tokenLimitsStr = await db.getSetting('token_limits');
     let tokenLimits = {
       chat: 1000,
-      analysis: 800,
+      analysis: 1200,
       streaming: 1000,
       test: 50
     };
@@ -681,6 +899,7 @@ app.post('/api/ai-chat-stream', async (req, res) => {
         
         // Send completion event after we have the result
         const processingTime = Date.now() - startTime;
+        console.log(`🎯 AI Chat Complete - Tokens: ${tokens}, Processing Time: ${processingTime}ms`);
         io.emit('ai-chat-complete', { 
           socketId, 
           processingTime, 
@@ -880,6 +1099,11 @@ app.delete('/api/theme', async (req, res) => {
 
 // Setup monitoring event broadcasting via WebSocket
 realTimeMonitor.on('systemMetrics', (data) => {
+  console.log('🔄 Broadcasting systemMetrics to clients:', { 
+    cpu: data.cpu?.usage, 
+    memory: data.memory?.percentage,
+    clientCount: io.engine.clientsCount 
+  });
   io.emit('systemMetrics', data);
 });
 
@@ -919,12 +1143,10 @@ realTimeMonitor.on('cleanup', (data) => {
   console.warn(`🧹 MONITORING CLEANUP: ${data.requests} requests, ${data.queries} queries removed`);
 });
 
-// Catch all handler for React app (only in production) - MUST BE LAST!
-if (process.env.NODE_ENV === 'production') {
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
-  });
-}
+// Catch all handler for React app - MUST BE LAST!
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
+});
 
 // Start server
 server.listen(PORT, async () => {
@@ -932,6 +1154,19 @@ server.listen(PORT, async () => {
   
   // Initialize scheduler
   await scheduler.init();
+  
+  // Initialize scraping service with saved method
+  try {
+    const savedMethod = await db.getSetting('scraping_method');
+    if (savedMethod && scrapingService.getAvailableMethods().some(m => m.name === savedMethod)) {
+      scrapingService.setScrapingMethod(savedMethod);
+      console.log(`🔧 Restored scraping method: ${scrapingService.getDisplayName(savedMethod)}`);
+    } else {
+      console.log(`🔧 Using default scraping method: ${scrapingService.getDisplayName('feedparser')}`);
+    }
+  } catch (error) {
+    console.warn('⚠️ Could not restore scraping method, using default:', error.message);
+  }
   
   console.log('✅ AIInvestorHood5 server is ready!');
   console.log(`📱 Open http://localhost:${PORT} to access the app`);

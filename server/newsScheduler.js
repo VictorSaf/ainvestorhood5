@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const Database = require('./database');
 const AIService = require('./aiService');
 const ScrapyService = require('./scrapyService');
+const UnifiedScrapingService = require('./unifiedScrapingService');
 const monitoring = require('./monitoring');
 const liveStream = require('./liveStream');
 
@@ -10,16 +11,32 @@ class NewsScheduler {
     this.db = new Database();
     this.aiService = null;
     this.scrapyService = new ScrapyService();
+    this.unifiedScrapingService = new UnifiedScrapingService();
     this.isRunning = false;
   }
 
   async init() {
     await this.initializeAIService();
+    await this.initializeScrapingService();
     if (this.aiService) {
       this.startScheduler();
       console.log('News scheduler initialized');
     } else {
       console.log('No AI configuration found. Scheduler will start after setup is complete.');
+    }
+  }
+
+  async initializeScrapingService() {
+    try {
+      const savedMethod = await this.db.getSetting('scraping_method');
+      if (savedMethod && this.unifiedScrapingService.getAvailableMethods().some(m => m.name === savedMethod)) {
+        this.unifiedScrapingService.setScrapingMethod(savedMethod);
+        console.log(`🔧 Scraping service initialized with: ${this.unifiedScrapingService.getDisplayName(savedMethod)}`);
+      } else {
+        console.log(`🔧 Scraping service initialized with default: ${this.unifiedScrapingService.getDisplayName('feedparser')}`);
+      }
+    } catch (error) {
+      console.warn('⚠️ Could not initialize scraping service, using default:', error.message);
     }
   }
 
@@ -31,7 +48,7 @@ class NewsScheduler {
       const tokenLimitsStr = await this.db.getSetting('token_limits');
       let tokenLimits = {
         chat: 1000,
-        analysis: 800,
+        analysis: 1200,
         streaming: 1000,
         test: 50
       };

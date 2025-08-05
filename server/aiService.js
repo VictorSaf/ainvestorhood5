@@ -12,7 +12,7 @@ class AIService {
     this.customPrompt = customPrompt;
     this.tokenLimits = tokenLimits || {
       chat: 1000,
-      analysis: 800,
+      analysis: 1500,
       streaming: 1000,
       test: 50
     };

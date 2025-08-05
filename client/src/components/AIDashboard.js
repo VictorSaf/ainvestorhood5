@@ -189,6 +189,9 @@ const AIDashboard = ({ onClose, integrated = false }) => {
   };
 
   const handleStreamComplete = (data) => {
+    console.log('🎯 Stream Complete Data:', data);
+    console.log('🎯 Tokens received:', data.tokens);
+    
     setChatMessages(prev => {
       const newMessages = [...prev];
       const lastMessage = newMessages[newMessages.length - 1];
@@ -198,6 +201,7 @@ const AIDashboard = ({ onClose, integrated = false }) => {
         lastMessage.streaming = false;
         lastMessage.processingTime = data.processingTime;
         lastMessage.tokens = data.tokens;
+        console.log('🎯 Message updated with tokens:', lastMessage.tokens);
       }
       
       return newMessages;
@@ -205,6 +209,9 @@ const AIDashboard = ({ onClose, integrated = false }) => {
     
     setIsLoading(false);
     setStreamingMessageId(null);
+    
+    // Refresh metrics after completing a chat message
+    loadModelMetrics();
   };
 
   const getModelIcon = (provider) => {
@@ -347,14 +354,22 @@ const AIDashboard = ({ onClose, integrated = false }) => {
                 </div>
                 
                 {modelMetrics && (
-                  <div className="grid grid-cols-2 gap-4 mt-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
                     <div>
                       <p className="text-sm text-gray-600">Total Requests</p>
-                      <p className="text-lg font-bold text-purple-600">{modelMetrics.totalRequests}</p>
+                      <p className="text-lg font-bold text-purple-600">{modelMetrics.requests?.total || modelMetrics.totalRequests || 0}</p>
                     </div>
                     <div>
                       <p className="text-sm text-gray-600">Avg Response Time</p>
-                      <p className="text-lg font-bold text-purple-600">{modelMetrics.avgResponseTime}ms</p>
+                      <p className="text-lg font-bold text-purple-600">{Math.round(modelMetrics.avgResponseTime || 0)}ms</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-600">Tokens Used</p>
+                      <p className="text-lg font-bold text-blue-600">{modelMetrics.tokens?.used || 0}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-600">Token Cost</p>
+                      <p className="text-lg font-bold text-green-600">${(modelMetrics.tokens?.cost || 0).toFixed(4)}</p>
                     </div>
                   </div>
                 )}
@@ -466,9 +481,14 @@ const AIDashboard = ({ onClose, integrated = false }) => {
                       )}
                       <div className="flex justify-between items-center mt-1 text-xs opacity-75">
                         <span>{message.timestamp.toLocaleTimeString()}</span>
-                        {message.processingTime && (
-                          <span>{message.processingTime}ms</span>
-                        )}
+                        <div className="flex space-x-2">
+                          {message.processingTime && (
+                            <span>{message.processingTime}ms</span>
+                          )}
+                          {message.tokens && (
+                            <span className="text-blue-600 font-medium">{message.tokens} tokens</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>

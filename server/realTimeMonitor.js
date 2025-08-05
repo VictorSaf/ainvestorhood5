@@ -6,6 +6,9 @@ class RealTimeMonitor extends EventEmitter {
   constructor() {
     super();
     this.isRunning = false;
+    this.previousCpuInfo = null;
+    this.database = null;
+    this.lastSavedTimestamp = 0;
     this.metrics = {
       system: {
         cpu: { usage: 0, cores: os.cpus().length },
@@ -22,12 +25,29 @@ class RealTimeMonitor extends EventEmitter {
       http: {
         requests: { total: 0, active: 0, errors: 0, avgResponseTime: 0 },
         responses: { success: 0, error: 0, pending: 0 },
-        routes: {}
+        routes: {},
+        errorDetails: []
       },
       websocket: {
-        connections: { total: 0, active: 0 },
-        messages: { sent: 0, received: 0, errors: 0 },
-        clients: new Map()
+        connections: { total: 0, active: 0, peak: 0, totalSessions: 0 },
+        messages: { 
+          sent: 0, received: 0, errors: 0, 
+          avgSize: 0, totalSize: 0,
+          events: new Map() // Track message events
+        },
+        clients: new Map(),
+        performance: {
+          avgConnectionTime: 0,
+          avgMessageLatency: 0,
+          disconnectReasons: new Map(),
+          errorTypes: new Map()
+        },
+        history: {
+          connections: [], // Last 2 hours
+          messages: [],    // Last 2 hours  
+          errors: [],      // Last 2 hours
+          latency: []      // Last 2 hours
+        }
       },
       database: {
         queries: { total: 0, active: 0, errors: 0, avgTime: 0 },
@@ -50,6 +70,7 @@ class RealTimeMonitor extends EventEmitter {
     
     this.logs = [];
     this.maxLogs = 1000;
+    this.maxErrorDetails = 50;
     this.activeRequests = new Map();
     this.activeQueries = new Map();
     this.performanceHistory = {
@@ -58,7 +79,12 @@ class RealTimeMonitor extends EventEmitter {
       requests: [],
       responses: []
     };
-    this.maxHistoryPoints = 100;
+    this.maxHistoryPoints = 7200; // 2 hours at 1 second intervals
+    this.websocketHistoryMaxPoints = 1440; // 2 hours at 5 second intervals
+  }
+
+  setDatabase(database) {
+    this.database = database;
   }
 
   start() {
@@ -81,6 +107,21 @@ class RealTimeMonitor extends EventEmitter {
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, 5000);
+    
+    // Curăță metricile vechi din baza de date o dată pe oră
+    this.dbCleanupInterval = setInterval(() => {
+      if (this.database) {
+        this.database.cleanOldSystemMetrics()
+          .then(deleted => {
+            if (deleted > 0) {
+              console.log(`🗑️ Cleaned ${deleted} old system metrics from database`);
+            }
+          })
+          .catch(err => {
+            console.error('❌ Failed to clean old system metrics:', err.message);
+          });
+      }
+    }, 3600000); // 1 hour
   }
 
   stop() {
@@ -90,11 +131,12 @@ class RealTimeMonitor extends EventEmitter {
     clearInterval(this.systemInterval);
     clearInterval(this.appInterval);
     clearInterval(this.cleanupInterval);
+    clearInterval(this.dbCleanupInterval);
     console.log('🔍 Real-time monitoring stopped');
   }
 
   collectSystemMetrics() {
-    // CPU Usage
+    // CPU Usage - Fixed calculation using time differences
     const cpus = os.cpus();
     let totalIdle = 0;
     let totalTick = 0;
@@ -106,11 +148,27 @@ class RealTimeMonitor extends EventEmitter {
       totalIdle += cpu.times.idle;
     });
     
-    const idle = totalIdle / cpus.length;
-    const total = totalTick / cpus.length;
-    const usage = 100 - ~~(100 * idle / total);
+    const currentCpuInfo = {
+      idle: totalIdle,
+      total: totalTick,
+      timestamp: Date.now()
+    };
     
-    this.metrics.system.cpu.usage = usage;
+    let cpuUsage = 0;
+    
+    if (this.previousCpuInfo) {
+      const idleDifference = currentCpuInfo.idle - this.previousCpuInfo.idle;
+      const totalDifference = currentCpuInfo.total - this.previousCpuInfo.total;
+      
+      if (totalDifference > 0) {
+        cpuUsage = Math.round(100 - (100 * idleDifference / totalDifference));
+        // Ensure CPU usage is within reasonable bounds
+        cpuUsage = Math.max(0, Math.min(100, cpuUsage));
+      }
+    }
+    
+    this.previousCpuInfo = currentCpuInfo;
+    this.metrics.system.cpu.usage = cpuUsage;
     
     // Memory
     const freeMem = os.freemem();
@@ -128,14 +186,32 @@ class RealTimeMonitor extends EventEmitter {
     this.metrics.system.uptime = os.uptime();
     this.metrics.system.loadAverage = os.loadavg();
     
-    // Adaugă în istoric
-    this.addToHistory('cpu', { timestamp: Date.now(), value: usage });
+    // Add to history
+    this.addToHistory('cpu', { timestamp: Date.now(), value: this.metrics.system.cpu.usage });
     this.addToHistory('memory', { 
       timestamp: Date.now(), 
       value: this.metrics.system.memory.percentage 
     });
     
-    // Emit pentru actualizare live
+    // Save to database every 10 seconds to avoid too many writes
+    const now = Date.now();
+    if (this.database && (now - this.lastSavedTimestamp > 10000)) {
+      this.database.saveSystemMetrics(this.metrics.system)
+        .then(() => {
+          console.log('💾 System metrics saved to database');
+        })
+        .catch(err => {
+          console.error('❌ Failed to save system metrics:', err.message);
+        });
+      this.lastSavedTimestamp = now;
+    }
+
+    // Emit for live updates
+    console.log('📊 System metrics collected:', { 
+      cpu: this.metrics.system.cpu.usage, 
+      memory: this.metrics.system.memory.percentage,
+      timestamp: new Date().toISOString()
+    });
     this.emit('systemMetrics', this.metrics.system);
   }
 
@@ -257,6 +333,27 @@ class RealTimeMonitor extends EventEmitter {
       
       if (res.statusCode >= 400) {
         routeStats.errors++;
+        
+        // Store error details
+        const errorDetail = {
+          id: requestId,
+          timestamp: Date.now(),
+          method: req.method,
+          url: req.url,
+          statusCode: res.statusCode,
+          duration,
+          ip: requestData?.ip || req.ip,
+          userAgent: requestData?.userAgent || req.get('User-Agent'),
+          errorMessage: data ? data.toString().substring(0, 500) : 'No error message',
+          headers: req.headers
+        };
+        
+        monitor.metrics.http.errorDetails.unshift(errorDetail);
+        
+        // Keep only the last maxErrorDetails errors
+        if (monitor.metrics.http.errorDetails.length > monitor.maxErrorDetails) {
+          monitor.metrics.http.errorDetails = monitor.metrics.http.errorDetails.slice(0, monitor.maxErrorDetails);
+        }
       }
       
       // Log detailed response
@@ -299,7 +396,7 @@ class RealTimeMonitor extends EventEmitter {
       ((current * (total - 1)) + duration) / total;
   }
 
-  // WebSocket Monitoring
+  // Enhanced WebSocket Monitoring
   onWebSocketConnection(socket) {
     const clientId = socket.id;
     const connectionTime = Date.now();
@@ -307,55 +404,117 @@ class RealTimeMonitor extends EventEmitter {
     const clientData = {
       id: clientId,
       ip: socket.handshake.address,
-      userAgent: socket.handshake.headers['user-agent'],
+      userAgent: socket.handshake.headers['user-agent'] || 'Unknown',
       connectedAt: connectionTime,
       messagesReceived: 0,
       messagesSent: 0,
-      lastActivity: connectionTime
+      lastActivity: connectionTime,
+      totalDataReceived: 0,
+      totalDataSent: 0,
+      events: new Map(), // Track event types
+      latencyHistory: [],
+      errors: 0
     };
     
     this.metrics.websocket.clients.set(clientId, clientData);
     this.metrics.websocket.connections.total++;
     this.metrics.websocket.connections.active++;
+    this.metrics.websocket.connections.totalSessions++;
     
-    this.log('info', 'WEBSOCKET_CONNECT', {
+    // Update peak connections
+    if (this.metrics.websocket.connections.active > this.metrics.websocket.connections.peak) {
+      this.metrics.websocket.connections.peak = this.metrics.websocket.connections.active;
+    }
+    
+    // Add to history
+    this.addWebSocketHistory('connections', {
+      timestamp: connectionTime,
+      type: 'connect',
       clientId,
+      active: this.metrics.websocket.connections.active,
       ip: clientData.ip,
       userAgent: clientData.userAgent
     });
     
-    // Monitor messages
-    socket.onAny((event, ...args) => {
-      this.onWebSocketMessage(clientId, 'received', event, args);
+    this.log('info', 'WEBSOCKET_CONNECT', {
+      clientId,
+      ip: clientData.ip,
+      userAgent: clientData.userAgent,
+      totalClients: this.metrics.websocket.connections.active
     });
     
-    // Monitor disconnect
+    // Enhanced message monitoring
+    socket.onAny((event, ...args) => {
+      this.onWebSocketMessage(clientId, 'received', event, args, Date.now());
+    });
+    
+    // Monitor outgoing messages
+    const originalEmit = socket.emit;
+    socket.emit = (...args) => {
+      const [event, ...data] = args;
+      this.onWebSocketMessage(clientId, 'sent', event, data, Date.now());
+      return originalEmit.apply(socket, args);
+    };
+    
+    // Enhanced disconnect monitoring
     socket.on('disconnect', (reason) => {
       this.onWebSocketDisconnect(clientId, reason);
+    });
+    
+    // Monitor errors
+    socket.on('error', (error) => {
+      this.onWebSocketError(clientId, error);
     });
     
     this.emit('websocketMetrics', this.metrics.websocket);
   }
 
-  onWebSocketMessage(clientId, direction, event, data) {
+  onWebSocketMessage(clientId, direction, event, data, timestamp = Date.now()) {
     const client = this.metrics.websocket.clients.get(clientId);
     if (!client) return;
     
-    client.lastActivity = Date.now();
+    const messageSize = JSON.stringify(data).length;
+    client.lastActivity = timestamp;
     
+    // Update client metrics
     if (direction === 'received') {
       client.messagesReceived++;
+      client.totalDataReceived += messageSize;
       this.metrics.websocket.messages.received++;
     } else {
       client.messagesSent++;
+      client.totalDataSent += messageSize;
       this.metrics.websocket.messages.sent++;
     }
+    
+    // Track event types
+    const eventCount = client.events.get(event) || 0;
+    client.events.set(event, eventCount + 1);
+    
+    const globalEventCount = this.metrics.websocket.messages.events.get(event) || 0;
+    this.metrics.websocket.messages.events.set(event, globalEventCount + 1);
+    
+    // Update total message size and average
+    this.metrics.websocket.messages.totalSize += messageSize;
+    const totalMessages = this.metrics.websocket.messages.sent + this.metrics.websocket.messages.received;
+    this.metrics.websocket.messages.avgSize = totalMessages > 0 ? 
+      Math.round(this.metrics.websocket.messages.totalSize / totalMessages) : 0;
+    
+    // Add to message history
+    this.addWebSocketHistory('messages', {
+      timestamp,
+      clientId,
+      direction,
+      event,
+      size: messageSize,
+      totalActive: this.metrics.websocket.connections.active
+    });
     
     this.log('debug', 'WEBSOCKET_MESSAGE', {
       clientId,
       direction,
       event,
-      dataSize: JSON.stringify(data).length
+      dataSize: messageSize
     });
     
     this.emit('websocketMetrics', this.metrics.websocket);
@@ -365,20 +524,94 @@ class RealTimeMonitor extends EventEmitter {
     const client = this.metrics.websocket.clients.get(clientId);
     if (!client) return;
     
-    const sessionDuration = Date.now() - client.connectedAt;
+    const disconnectTime = Date.now();
+    const sessionDuration = disconnectTime - client.connectedAt;
+    
+    // Update disconnect reasons tracking
+    const reasonCount = this.metrics.websocket.performance.disconnectReasons.get(reason) || 0;
+    this.metrics.websocket.performance.disconnectReasons.set(reason, reasonCount + 1);
+    
+    // Update average connection time
+    const totalSessions = this.metrics.websocket.connections.totalSessions;
+    const currentAvg = this.metrics.websocket.performance.avgConnectionTime;
+    this.metrics.websocket.performance.avgConnectionTime = 
+      ((currentAvg * (totalSessions - 1)) + sessionDuration) / totalSessions;
+    
+    // Add to history
+    this.addWebSocketHistory('connections', {
+      timestamp: disconnectTime,
+      type: 'disconnect',
+      clientId,
+      reason,
+      sessionDuration,
+      messagesReceived: client.messagesReceived,
+      messagesSent: client.messagesSent,
+      totalDataReceived: client.totalDataReceived,
+      totalDataSent: client.totalDataSent,
+      active: this.metrics.websocket.connections.active - 1,
+      ip: client.ip
+    });
     
     this.log('info', 'WEBSOCKET_DISCONNECT', {
       clientId,
       reason,
       sessionDuration,
       messagesReceived: client.messagesReceived,
-      messagesSent: client.messagesSent
+      messagesSent: client.messagesSent,
+      dataReceived: client.totalDataReceived,
+      dataSent: client.totalDataSent
     });
     
     this.metrics.websocket.clients.delete(clientId);
     this.metrics.websocket.connections.active--;
     
     this.emit('websocketMetrics', this.metrics.websocket);
+  }
+  
+  onWebSocketError(clientId, error) {
+    const client = this.metrics.websocket.clients.get(clientId);
+    if (client) {
+      client.errors++;
+    }
+    
+    this.metrics.websocket.messages.errors++;
+    
+    // Track error types
+    const errorType = error.type || error.name || 'Unknown';
+    const errorCount = this.metrics.websocket.performance.errorTypes.get(errorType) || 0;
+    this.metrics.websocket.performance.errorTypes.set(errorType, errorCount + 1);
+    
+    // Add to error history
+    this.addWebSocketHistory('errors', {
+      timestamp: Date.now(),
+      clientId,
+      errorType,
+      message: error.message || 'Unknown error',
+      stack: error.stack
+    });
+    
+    this.log('error', 'WEBSOCKET_ERROR', {
+      clientId,
+      errorType,
+      message: error.message,
+      stack: error.stack
+    });
+    
+    this.emit('websocketMetrics', this.metrics.websocket);
+  }
+  
+  // Add WebSocket history data
+  addWebSocketHistory(type, data) {
+    const history = this.metrics.websocket.history[type];
+    if (!history) return;
+    
+    history.push(data);
+    
+    // Keep only last 2 hours of data (depending on data frequency)
+    const maxPoints = type === 'messages' ? this.websocketHistoryMaxPoints * 10 : this.websocketHistoryMaxPoints;
+    if (history.length > maxPoints) {
+      history.shift();
+    }
   }
 
   // Database Monitoring

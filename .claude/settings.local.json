@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "Bash(ls:*)",
@@ -40,7 +41,23 @@
       "Bash(npm run build:*)",
       "Bash(npm run server:*)",
       "Bash(npm start)",
-      "Bash(PORT=3001 npm start)"
+      "Bash(PORT=3001 npm start)",
+      "Bash(timeout:*)",
+      "Bash(source:*)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(ollama:*)",
+      "Bash(cp:*)",
+      "Bash(sudo cp:*)",
+      "Bash(time curl:*)",
+      "Bash(pip3 list:*)",
+      "Bash(pip3 install:*)",
+      "Bash(true)",
+      "Bash(/dev/null)",
+      "Bash(npm run client:*)",
+      "Bash(/Volumes/external/work/ainvestorhood5/scrapy_news_collector/venv/bin/python --version)",
+      "Bash(top:*)",
+      "Bash(pgrep:*)"
     ],
     "deny": []
   }

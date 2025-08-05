@@ -25,7 +25,7 @@ class OllamaService {
     }
   }
 
-  async analyzeNewsWithOllama(model, prompt, title, content, url, tokenLimit = 500) {
+  async analyzeNewsWithOllama(model, prompt, title, content, url, tokenLimit = 1500) {
     try {
       const analysisPrompt = `${prompt}
 
@@ -60,22 +60,30 @@ Please analyze this financial news article and provide your response in JSON for
       try {
         // Extract JSON from response
         const responseText = response.data.response;
-        console.log('Raw Ollama response:', responseText.substring(0, 200) + '...');
+        console.log('Raw Ollama response:', responseText.substring(0, 150) + '...');
+        console.log('Raw Ollama response length:', responseText.length);
         
         // Try multiple approaches to extract JSON
         let jsonText = null;
         
-        // Approach 1: Find complete JSON object
-        const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
-        if (jsonMatch) {
-          jsonText = jsonMatch[0];
-        } else {
-          // Approach 2: Look for JSON between specific markers
-          const startMarker = responseText.indexOf('{');
-          const endMarker = responseText.lastIndexOf('}');
-          if (startMarker !== -1 && endMarker !== -1 && endMarker > startMarker) {
-            jsonText = responseText.substring(startMarker, endMarker + 1);
-          }
+        // First, try to parse the entire response as JSON
+        try {
+          analysis = JSON.parse(responseText.trim());
+          console.log('✅ Successfully parsed full response as JSON');
+          // Add actual token count from Ollama
+          const promptTokens = response.data.prompt_eval_count || 0;
+          const responseTokens = response.data.eval_count || 0;
+          analysis.tokens = promptTokens + responseTokens;
+          return analysis;
+        } catch (fullParseError) {
+          console.log('Full response parse failed, trying extraction methods');
+        }
+        
+        // Direct approach: Extract everything from first { to end, then fix
+        const startMarker = responseText.indexOf('{');
+        if (startMarker !== -1) {
+          jsonText = responseText.substring(startMarker);
+          console.log('Extracted JSON text from Ollama:', jsonText);
         }
         
         if (jsonText) {
@@ -85,9 +93,26 @@ Please analyze this financial news article and provide your response in JSON for
             .replace(/,\s*]/g, ']')  // Remove trailing commas in arrays
             .replace(/[\u0000-\u001F\u007F-\u009F]/g, ""); // Remove control characters
           
+          // Check if JSON is complete (has closing brace)
+          if (!jsonText.trim().endsWith('}')) {
+            console.log('JSON appears incomplete, adding closing brace');
+            console.log('Original JSON text:', jsonText);
+            jsonText = jsonText.trim() + '}';
+            console.log('Fixed JSON text:', jsonText);
+          }
+          
           analysis = JSON.parse(jsonText);
+          console.log('✅ Successfully parsed JSON with confidence:', analysis.confidence_score);
         } else {
-          throw new Error('No JSON found in response');
+          console.log('No JSON found, using fallback analysis');
+          // Fallback analysis instead of throwing error
+          analysis = {
+            summary: `Analysis of: ${title.substring(0, 80)}...`,
+            instrument_type: 'stocks',
+            instrument_name: 'SPDR S&P 500',
+            recommendation: 'HOLD',
+            confidence_score: 50
+          };
         }
       } catch (parseError) {
         console.error('Error parsing Ollama response:', parseError);
@@ -97,7 +122,7 @@ Please analyze this financial news article and provide your response in JSON for
         analysis = {
           summary: `Analysis of: ${title.substring(0, 80)}...`,
           instrument_type: 'stocks',
-          instrument_name: null,
+          instrument_name: 'SPDR S&P 500',
           recommendation: 'HOLD',
           confidence_score: 50
         };
@@ -124,6 +149,11 @@ Please analyze this financial news article and provide your response in JSON for
       const promptTokens = response.data.prompt_eval_count || 0;
       const responseTokens = response.data.eval_count || 0;
       result.tokens = promptTokens + responseTokens;
+      
+      // For debugging, add raw response (only in debug mode)
+      if (process.env.NODE_ENV === 'development') {
+        result._debug_raw_response = response.data.response;
+      }
 
       return result;
 
@@ -242,7 +272,7 @@ Please analyze this financial news article and provide your response in JSON for
     }
   }
 
-  async streamChatWithModel(model, message, customPrompt = null, onChunk = null, tokenLimit = 300) {
+  async streamChatWithModel(model, message, customPrompt = null, onChunk = null, tokenLimit = 500) {
     try {
       const prompt = customPrompt 
         ? `${customPrompt}\n\nUser: ${message}\nAssistant:`

@@ -1,5 +1,5 @@
 # Multi-stage build pentru aplicația AIInvestorHood5
-FROM node:18-alpine AS client-build
+FROM node:20-alpine AS client-build
 
 # Set working directory pentru client
 WORKDIR /app/client
@@ -17,7 +17,7 @@ COPY client/ ./
 RUN npm run build
 
 # Server stage
-FROM node:18-alpine AS server-build
+FROM node:20-alpine AS server-build
 
 # Install Python și dependințe pentru Scrapy + Chromium pentru Puppeteer + SQLite pentru better-sqlite3
 RUN apk add --no-cache \
@@ -76,7 +76,7 @@ RUN python3 -m venv venv && \
 COPY scrapy_news_collector/ ./
 
 # Final production stage
-FROM node:18-alpine
+FROM node:20-alpine
 
 # Install Python și runtime dependencies
 RUN apk add --no-cache \
