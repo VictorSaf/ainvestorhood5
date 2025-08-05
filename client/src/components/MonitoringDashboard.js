@@ -1,5 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
-import { flushSync } from 'react-dom';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import io from 'socket.io-client';
 import AIConfigurationTab from './AIConfigurationTab';
 import ThemeEditor from './ThemeEditor';
@@ -107,6 +106,11 @@ const MonitoringDashboard = ({ onClose }) => {
     }
   });
   
+  // Chart refs to access chart instances directly
+  const cpuChartRef = useRef(null);
+  const memoryChartRef = useRef(null);
+  const memoryGBChartRef = useRef(null);
+  
   // Derived values for backward compatibility
   const chartData = chartState.data;
   const chartScales = chartState.scales;
@@ -160,110 +164,28 @@ const MonitoringDashboard = ({ onClose }) => {
       setStreamingActive(true);
       setTimeout(() => setStreamingActive(false), 500);
 
-      // Update chart data with new real-time point
+      // Update charts directly using Chart.js API to avoid recreation flickering
       const now = new Date();
       
-      console.log('🔴 STEP 2: About to call setChartState with flushSync');
+      // Validate incoming values to prevent anomalous data
+      let cpuUsage = data.cpu?.usage || 0;
+      let memoryPercentage = data.memory?.percentage || 0;
       
-      flushSync(() => {
-        setChartState(prev => {
-        console.log('🔴 STEP 3: Inside setChartState callback, prev scales:', prev.scales);
-        
-        // Validate incoming values to prevent anomalous data
-        let cpuUsage = data.cpu?.usage || 0;
-        let memoryPercentage = data.memory?.percentage || 0;
-        
-        // Sanitize CPU usage (should be between 0-100)
-        cpuUsage = Math.max(0, Math.min(100, cpuUsage));
-        
-        // Sanitize memory percentage (should be between 0-100)
-        memoryPercentage = Math.max(0, Math.min(100, memoryPercentage));
-        
-        // If we have previous data, check for anomalous drops in memory
-        if (prev.data.memoryUsage.length > 0) {
-          const lastMemoryValue = prev.data.memoryUsage[prev.data.memoryUsage.length - 1]?.y || 0;
-          const difference = Math.abs(memoryPercentage - lastMemoryValue);
-          
-          // If the difference is > 50%, it's likely anomalous - use previous value instead
-          if (difference > 50 && lastMemoryValue > 0) {
-            console.warn('🚨 ANOMALOUS MEMORY VALUE DETECTED - IGNORING:', {
-              received: memoryPercentage,
-              previous: lastMemoryValue,
-              difference: difference,
-              using: lastMemoryValue
-            });
-            memoryPercentage = lastMemoryValue; // Use previous stable value
-          }
-        }
-        
-        // Similar check for CPU usage
-        if (prev.data.cpu.length > 0) {
-          const lastCpuValue = prev.data.cpu[prev.data.cpu.length - 1]?.y || 0;
-          const cpuDifference = Math.abs(cpuUsage - lastCpuValue);
-          
-          // If CPU jumps by more than 80%, it might be anomalous
-          if (cpuDifference > 80 && lastCpuValue > 0) {
-            console.warn('🚨 ANOMALOUS CPU VALUE DETECTED - SMOOTHING:', {
-              received: cpuUsage,
-              previous: lastCpuValue,
-              difference: cpuDifference,
-              using: Math.round((cpuUsage + lastCpuValue) / 2) // Use average
-            });
-            cpuUsage = Math.round((cpuUsage + lastCpuValue) / 2); // Smooth the value
-          }
-        }
-        
-        const newCpuData = [...prev.data.cpu, { x: now.toISOString(), y: cpuUsage }]; // Use validated CPU
-        const newMemoryUsageData = [...prev.data.memoryUsage, { 
-          x: now.toISOString(), 
-          y: memoryPercentage // Use validated memory percentage
-        }];
-        const newTotalMemoryData = [...prev.data.totalMemory, { 
-          x: now.toISOString(), 
-          y: data.memory?.total ? (data.memory.total / (1024 * 1024 * 1024)) : 36 // Convert to GB or use default
-        }];
-        const newMemoryGBData = [...prev.data.memoryGB, {
-          x: now.toISOString(),
-          y: data.memory?.used ? (data.memory.used / (1024 * 1024 * 1024)) : 0 // Convert used memory to GB
-        }];
-
-        // Keep only last maxDataPoints for performance
-        const updatedData = {
-          cpu: newCpuData.slice(-maxDataPoints),
-          memoryUsage: newMemoryUsageData.slice(-maxDataPoints),
-          totalMemory: newTotalMemoryData.slice(-maxDataPoints),
-          memoryGB: newMemoryGBData.slice(-maxDataPoints)
-        };
-        
-        
-        // Calculate new scales and return atomic state update
-        const newCpuScale = calculateDynamicScale(updatedData.cpu);
-        const newMemoryScale = calculateDynamicScale(updatedData.memoryUsage);
-        const newMemoryGBScale = calculateDynamicScaleGB(updatedData.memoryGB);
-        
-        console.log('🔴 STEP 4: Calculated new scales:', {
-          cpu: newCpuScale,
-          memory: newMemoryScale,
-          memoryGB: newMemoryGBScale
-        });
-        
-        const newState = {
-          data: updatedData,
-          scales: {
-            cpu: newCpuScale,
-            memory: newMemoryScale,
-            memoryGB: newMemoryGBScale
-          }
-        };
-        
-        console.log('🔴 STEP 5: Returning new state from setChartState');
-        
-        // Return combined state update - single atomic operation
-        return newState;
-        });
+      // Sanitize CPU usage (should be between 0-100)
+      cpuUsage = Math.max(0, Math.min(100, cpuUsage));
+      
+      // Sanitize memory percentage (should be between 0-100)
+      memoryPercentage = Math.max(0, Math.min(100, memoryPercentage));
+      
+      console.log('💫 DIRECT CHART UPDATE - CPU:', cpuUsage, 'Memory:', memoryPercentage);
+      
+      // Update charts directly without state recreation
+      updateChartsDirectly({
+        cpu: cpuUsage,
+        memory: memoryPercentage,
+        memoryGB: data.memory?.used ? (data.memory.used / (1024 * 1024 * 1024)) : 0,
+        timestamp: now
       });
-      
-      console.log('🔴 STEP 6: setChartState with flushSync completed');
     });
 
     socketRef.current.on('httpMetrics', (data) => {
@@ -476,6 +398,96 @@ const MonitoringDashboard = ({ onClose }) => {
   };
 
   // Calculate dynamic scale for charts  
+  // Direct chart update function to avoid recreation flickering
+  const updateChartsDirectly = useCallback((newData) => {
+    const { cpu, memory, memoryGB, timestamp } = newData;
+    
+    console.log('🚀 DIRECT UPDATE START:', { cpu, memory, memoryGB });
+    
+    // Update CPU chart
+    if (cpuChartRef.current) {
+      const cpuChart = cpuChartRef.current;
+      const cpuDataset = cpuChart.data.datasets[0];
+      
+      // Add new data point
+      cpuDataset.data.push({ x: timestamp, y: cpu });
+      
+      // Keep only recent data points
+      if (cpuDataset.data.length > maxDataPoints) {
+        cpuDataset.data.shift();
+      }
+      
+      // Calculate and update scale
+      const newCpuScale = calculateDynamicScale(cpuDataset.data);
+      cpuChart.options.scales.y.min = newCpuScale.min;
+      cpuChart.options.scales.y.max = newCpuScale.max;
+      
+      console.log('📊 CPU chart updated directly - Scale:', newCpuScale);
+      cpuChart.update('none'); // Update without animation
+    }
+    
+    // Update Memory chart
+    if (memoryChartRef.current) {
+      const memoryChart = memoryChartRef.current;
+      const memoryDataset = memoryChart.data.datasets[0];
+      
+      // Add new data point
+      memoryDataset.data.push({ x: timestamp, y: memory });
+      
+      // Keep only recent data points
+      if (memoryDataset.data.length > maxDataPoints) {
+        memoryDataset.data.shift();
+      }
+      
+      // Calculate and update scale
+      const newMemoryScale = calculateDynamicScale(memoryDataset.data);
+      memoryChart.options.scales.y.min = newMemoryScale.min;
+      memoryChart.options.scales.y.max = newMemoryScale.max;
+      
+      console.log('📊 Memory chart updated directly - Scale:', newMemoryScale);
+      memoryChart.update('none'); // Update without animation
+    }
+    
+    // Update Memory GB chart
+    if (memoryGBChartRef.current) {
+      const memoryGBChart = memoryGBChartRef.current;
+      const memoryGBDataset = memoryGBChart.data.datasets[0];
+      
+      // Add new data point
+      memoryGBDataset.data.push({ x: timestamp, y: memoryGB });
+      
+      // Keep only recent data points
+      if (memoryGBDataset.data.length > maxDataPoints) {
+        memoryGBDataset.data.shift();
+      }
+      
+      // Calculate and update scale
+      const newMemoryGBScale = calculateDynamicScaleGB(memoryGBDataset.data);
+      memoryGBChart.options.scales.y.min = newMemoryGBScale.min;
+      memoryGBChart.options.scales.y.max = newMemoryGBScale.max;
+      
+      console.log('📊 Memory GB chart updated directly - Scale:', newMemoryGBScale);
+      memoryGBChart.update('none'); // Update without animation
+    }
+    
+    // Also update state for backup (but this won't cause chart recreation)
+    setChartState(prev => ({
+      data: {
+        cpu: [...prev.data.cpu, { x: timestamp.toISOString(), y: cpu }].slice(-maxDataPoints),
+        memoryUsage: [...prev.data.memoryUsage, { x: timestamp.toISOString(), y: memory }].slice(-maxDataPoints),
+        totalMemory: [...prev.data.totalMemory, { x: timestamp.toISOString(), y: 36 }].slice(-maxDataPoints),
+        memoryGB: [...prev.data.memoryGB, { x: timestamp.toISOString(), y: memoryGB }].slice(-maxDataPoints)
+      },
+      scales: {
+        cpu: calculateDynamicScale([...prev.data.cpu, { x: timestamp.toISOString(), y: cpu }].slice(-maxDataPoints)),
+        memory: calculateDynamicScale([...prev.data.memoryUsage, { x: timestamp.toISOString(), y: memory }].slice(-maxDataPoints)),
+        memoryGB: calculateDynamicScaleGB([...prev.data.memoryGB, { x: timestamp.toISOString(), y: memoryGB }].slice(-maxDataPoints))
+      }
+    }));
+    
+    console.log('✅ ALL CHARTS UPDATED DIRECTLY');
+  }, [maxDataPoints]);
+
   const calculateDynamicScale = (data, padding = 10) => {
     if (!data || data.length === 0) {
       return { min: 0, max: 100 };
@@ -1017,7 +1029,7 @@ const MonitoringDashboard = ({ onClose }) => {
                 </h3>
                 <div className="h-64">
                   <Line
-                    key={`cpu-${chartScales.cpu.min}-${chartScales.cpu.max}-${chartData.cpu.length}`}
+                    ref={cpuChartRef}
                     data={{
                       datasets: [
                         {
@@ -1043,7 +1055,7 @@ const MonitoringDashboard = ({ onClose }) => {
                 </h3>
                 <div className="h-64">
                   <Line
-                    key={`memory-${chartScales.memory.min}-${chartScales.memory.max}-${chartData.memoryUsage.length}`}
+                    ref={memoryChartRef}
                     data={{
                       datasets: [
                         {
@@ -1069,7 +1081,7 @@ const MonitoringDashboard = ({ onClose }) => {
                 </h3>
                 <div className="h-64">
                   <Line
-                    key={`memoryGB-${chartScales.memoryGB.min}-${chartScales.memoryGB.max}-${chartData.memoryGB.length}`}
+                    ref={memoryGBChartRef}
                     data={{
                       datasets: [
                         {

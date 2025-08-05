@@ -904,11 +904,29 @@ class RealTimeMonitor extends EventEmitter {
       // Exclude slowRequestTimer to prevent circular reference
     }));
     
+    // Convert websocket metrics with Maps to serializable format
+    const websocketMetrics = {
+      ...this.metrics.websocket,
+      clients: Array.from(this.metrics.websocket.clients.entries()).map(([id, client]) => [id, {
+        ...client,
+        events: Array.from(client.events.entries())
+      }]),
+      messages: {
+        ...this.metrics.websocket.messages,
+        events: Array.from(this.metrics.websocket.messages.events.entries())
+      },
+      performance: {
+        ...this.metrics.websocket.performance,
+        disconnectReasons: Array.from(this.metrics.websocket.performance.disconnectReasons.entries()),
+        errorTypes: Array.from(this.metrics.websocket.performance.errorTypes.entries())
+      }
+    };
+
     return {
       system: this.metrics.system,
       app: this.metrics.app,
       http: this.metrics.http,
-      websocket: this.metrics.websocket,
+      websocket: websocketMetrics,
       database: this.metrics.database,
       scrapy: this.metrics.scrapy,
       ai: this.metrics.ai,
