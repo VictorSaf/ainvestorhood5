@@ -841,7 +841,7 @@ const ThemeEditor = () => {
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center space-x-2">
             <Eye size={20} className="text-blue-600" />
-            <h3 className="text-xl font-semibold text-gray-900">Live Preview & Direct Edit</h3>
+            <h3 className="text-xl font-semibold text-gray-900">Component Preview</h3>
           </div>
           
           {/* Preview Component Selector */}

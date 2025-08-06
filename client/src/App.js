@@ -4,6 +4,8 @@ import SetupModal from './components/SetupModal';
 import MonitoringDashboard from './components/MonitoringDashboard';
 import AIDashboard from './components/AIDashboard';
 import LiveFeed from './components/LiveFeed';
+import EditModeToolbar from './components/EditModeToolbar';
+import { EditModeProvider } from './hooks/useEditMode';
 import { Layout } from './components/ui';
 import axios from 'axios';
 
@@ -99,27 +101,31 @@ function App() {
   }
 
   return (
-    <Layout className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <LiveFeed 
-        initialNews={news} 
-        hasApiKey={hasApiKey}
-        onRefresh={triggerNewsCollection}
-        onMonitoring={() => setShowMonitoring(true)}
-        onAIDashboard={() => setShowAIDashboard(true)}
-      />
-      
-      {showMonitoring && (
-        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="w-full h-full">
-            <MonitoringDashboard onClose={() => setShowMonitoring(false)} />
+    <EditModeProvider>
+      <Layout className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+        <EditModeToolbar />
+        
+        <LiveFeed 
+          initialNews={news} 
+          hasApiKey={hasApiKey}
+          onRefresh={triggerNewsCollection}
+          onMonitoring={() => setShowMonitoring(true)}
+          onAIDashboard={() => setShowAIDashboard(true)}
+        />
+        
+        {showMonitoring && (
+          <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
+            <div className="w-full h-full">
+              <MonitoringDashboard onClose={() => setShowMonitoring(false)} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {showAIDashboard && (
-        <AIDashboard onClose={() => setShowAIDashboard(false)} />
-      )}
-    </Layout>
+        {showAIDashboard && (
+          <AIDashboard onClose={() => setShowAIDashboard(false)} />
+        )}
+      </Layout>
+    </EditModeProvider>
   );
 }
 

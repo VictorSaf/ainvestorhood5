@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowUp, ArrowDown, Minus, ExternalLink, Clock, Zap, TrendingUp } from 'lucide-react';
 import { FinancialIcon } from './FinancialIcons';
+import EditableComponent from './EditableComponent';
 
 const ModernNewsCard = ({ article, index, isNew = false }) => {
   const [isVisible, setIsVisible] = useState(false);
@@ -71,7 +72,12 @@ const ModernNewsCard = ({ article, index, isNew = false }) => {
   const recommendationStyles = getRecommendationStyles(article.recommendation);
   const confidenceLevel = getConfidenceLevel(article.confidence_score);
 
-  return (
+  const handleSaveChanges = (editedProps) => {
+    console.log('Saving changes for news card:', editedProps);
+    // Here you could update the article data or send to backend
+  };
+
+  const cardContent = (
     <article className={`relative bg-white border border-gray-200 transition-all duration-500 hover:shadow-xl hover:shadow-gray-200/50 hover:-translate-y-1 overflow-hidden ${
       isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
     } ${isNew ? 'ring-2 ring-blue-500 ring-opacity-50' : ''}`}>
@@ -167,6 +173,18 @@ const ModernNewsCard = ({ article, index, isNew = false }) => {
         </div>
       </div>
     </article>
+  );
+
+  return (
+    <EditableComponent
+      componentName="NewsCard"
+      onSave={handleSaveChanges}
+      editableProps={['title', 'summary', 'recommendation', 'confidence_score']}
+      allowAddElements={true}
+      allowDeleteElements={false}
+    >
+      {cardContent}
+    </EditableComponent>
   );
 };
 

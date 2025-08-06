@@ -1,4 +1,5 @@
 import React from 'react';
+import EditableComponent from '../EditableComponent';
 
 const Button = ({ 
   children, 
@@ -31,7 +32,11 @@ const Button = ({
   
   const classes = `${baseClasses} ${variants[variant]} ${sizes[size]} ${className}`;
   
-  return (
+  const handleSaveChanges = (editedProps) => {
+    console.log('Saving button changes:', editedProps);
+  };
+  
+  const buttonElement = (
     <button
       type={type}
       onClick={onClick}
@@ -47,6 +52,18 @@ const Button = ({
       )}
       {children}
     </button>
+  );
+
+  return (
+    <EditableComponent
+      componentName="Button"
+      onSave={handleSaveChanges}
+      editableProps={['children', 'variant', 'size', 'disabled']}
+      allowAddElements={false}
+      allowDeleteElements={false}
+    >
+      {buttonElement}
+    </EditableComponent>
   );
 };
 

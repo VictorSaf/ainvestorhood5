@@ -2,7 +2,9 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import io from 'socket.io-client';
 import AIConfigurationTab from './AIConfigurationTab';
 import ThemeEditor from './ThemeEditor';
+import AdvancedCSSEditor from './AdvancedCSSEditor';
 import ScrapingConfiguration from './ScrapingConfiguration';
+import { useEditMode } from '../hooks/useEditMode';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -29,6 +31,42 @@ ChartJS.register(
 );
 
 const MonitoringDashboard = ({ onClose }) => {
+  // Theme state
+  const [theme, setTheme] = useState(null);
+  
+  // Edit mode
+  const { isGlobalEditMode, toggleGlobalEditMode } = useEditMode();
+  
+  // Load theme from database
+  useEffect(() => {
+    const loadTheme = async () => {
+      try {
+        const response = await fetch('http://localhost:8080/api/theme');
+        if (response.ok) {
+          const themeData = await response.json();
+          setTheme(themeData);
+        }
+      } catch (error) {
+        console.error('Failed to load theme:', error);
+      }
+    };
+    
+    loadTheme();
+    
+    // Listen for theme updates from ThemeEditor
+    const handleThemeUpdate = (event) => {
+      console.log('Theme updated, reloading...', event.detail.theme);
+      setTheme(event.detail.theme);
+    };
+    
+    window.addEventListener('themeUpdated', handleThemeUpdate);
+    
+    // Cleanup
+    return () => {
+      window.removeEventListener('themeUpdated', handleThemeUpdate);
+    };
+  }, []);
+
   // Add custom scrollbar styles
   useEffect(() => {
     const style = document.createElement('style');
@@ -41,11 +79,11 @@ const MonitoringDashboard = ({ onClose }) => {
         height: 6px;
       }
       .scrollbar-thin::-webkit-scrollbar-track {
-        background: #f1f1f1;
+        background: ${theme?.colors?.secondary?.[100] || '#f1f1f1'};
         border-radius: 3px;
       }
       .scrollbar-thin::-webkit-scrollbar-thumb {
-        background: #c1c1c1;
+        background: ${theme?.colors?.secondary?.[400] || '#c1c1c1'};
         border-radius: 3px;
       }
       .scrollbar-thin::-webkit-scrollbar-thumb:hover {
@@ -91,6 +129,7 @@ const MonitoringDashboard = ({ onClose }) => {
   const [showErrorModal, setShowErrorModal] = useState(false);
   const [selectedErrors, setSelectedErrors] = useState([]);
   const [streamingActive, setStreamingActive] = useState(false);
+  const [websocketStreaming, setWebsocketStreaming] = useState(true);
   // Combine chart data and scales in single state for atomic updates
   const [chartState, setChartState] = useState({
     data: {
@@ -118,6 +157,38 @@ const MonitoringDashboard = ({ onClose }) => {
   const [historicalDataLoaded, setHistoricalDataLoaded] = useState(false);
 
   const [scrapySources, setScrapySources] = useState([]);
+
+  // Theme helper functions
+  const getThemeColor = (path, fallback) => {
+    if (!theme) return fallback;
+    const keys = path.split('.');
+    let current = theme;
+    for (const key of keys) {
+      if (current && current[key] !== undefined) {
+        current = current[key];
+      } else {
+        return fallback;
+      }
+    }
+    return current;
+  };
+
+  const getComponentStyle = (component, variant = 'default') => {
+    return theme?.components?.[component]?.[variant] || {};
+  };
+
+  // Generate inline styles from theme
+  const createThemedStyle = (styles) => {
+    const result = {};
+    Object.entries(styles).forEach(([key, value]) => {
+      if (typeof value === 'string' && value.startsWith('colors.')) {
+        result[key] = getThemeColor(value, value);
+      } else {
+        result[key] = value;
+      }
+    });
+    return result;
+  };
   const [sourceStats, setSourceStats] = useState(null);
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [showFullSourcesList, setShowFullSourcesList] = useState(false);
@@ -200,6 +271,18 @@ const MonitoringDashboard = ({ onClose }) => {
       setLastUpdate(new Date());
       setStreamingActive(true);
       setTimeout(() => setStreamingActive(false), 500);
+      
+      // Trigger WebSocket tab streaming indicator
+      if (websocketStreaming) {
+        // Create a visual pulse effect specifically for WebSocket data updates
+        setTimeout(() => {
+          const wsCards = document.querySelectorAll('.websocket-card');
+          wsCards.forEach(card => {
+            card.classList.add('websocket-pulse');
+            setTimeout(() => card.classList.remove('websocket-pulse'), 300);
+          });
+        }, 50);
+      }
     });
 
     socketRef.current.on('databaseMetrics', (data) => {
@@ -769,49 +852,162 @@ const MonitoringDashboard = ({ onClose }) => {
 
   if (!metrics) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+      <div 
+        className="min-h-screen flex items-center justify-center"
+        style={{ 
+          background: getThemeColor('colors.secondary.50', '#f8fafc')
+        }}
+      >
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading monitoring dashboard...</p>
+          <div 
+            className="animate-spin rounded-full h-12 w-12 border-b-2 mx-auto"
+            style={{ 
+              borderColor: getThemeColor('colors.primary.500', '#3b82f6')
+            }}
+          ></div>
+          <p 
+            className="mt-4"
+            style={{ 
+              color: getThemeColor('colors.secondary.600', '#475569')
+            }}
+          >
+            Loading monitoring dashboard...
+          </p>
         </div>
       </div>
     );
   }
 
+  const headerStyle = getComponentStyle('header', 'container');
+  const titleStyle = getComponentStyle('header', 'title');
+  const cardStyle = getComponentStyle('card', 'default');
+
   return (
-    <div className="h-full bg-gray-100 flex flex-col">
+    <div 
+      className="h-full flex flex-col"
+      style={{ 
+        background: getThemeColor('colors.secondary.50', '#f8fafc')
+      }}
+    >
       {/* Header */}
-      <div className="bg-white shadow-sm border-b">
+      <div 
+        className="shadow-sm border-b"
+        style={{
+          background: headerStyle.background || '#ffffff',
+          backdropFilter: headerStyle.backdropFilter,
+          borderColor: getThemeColor('colors.secondary.200', '#e5e7eb')
+        }}
+      >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-4">
             <div className="flex items-center">
-              <h1 className="text-2xl font-bold text-gray-900">System Monitor</h1>
-              <div className={`ml-4 flex items-center ${isConnected ? 'text-green-500' : 'text-red-500'}`}>
-                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'} mr-2 ${streamingActive ? 'animate-pulse' : ''}`}></div>
-                <span className="text-sm font-medium">
+              <h1 
+                className="text-2xl font-bold"
+                style={{
+                  fontSize: titleStyle.fontSize || '1.25rem',
+                  fontWeight: titleStyle.fontWeight || '700',
+                  background: titleStyle.background,
+                  backgroundClip: titleStyle.backgroundClip,
+                  WebkitBackgroundClip: titleStyle.backgroundClip,
+                  color: titleStyle.color || getThemeColor('colors.secondary.900', '#0f172a')
+                }}
+              >
+                System Monitor
+              </h1>
+              <div className="ml-4 flex items-center">
+                <div 
+                  className={`w-2 h-2 rounded-full mr-2 ${streamingActive ? 'animate-pulse' : ''}`}
+                  style={{
+                    backgroundColor: isConnected 
+                      ? getThemeColor('colors.success.500', '#22c55e')
+                      : getThemeColor('colors.danger.500', '#ef4444')
+                  }}
+                ></div>
+                <span 
+                  className="text-sm font-medium"
+                  style={{
+                    color: isConnected 
+                      ? getThemeColor('colors.success.600', '#16a34a')
+                      : getThemeColor('colors.danger.600', '#dc2626')
+                  }}
+                >
                   {isConnected ? 'Live Stream' : 'Disconnected'}
                 </span>
                 {streamingActive && (
-                  <span className="ml-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full animate-pulse">
+                  <span 
+                    className="ml-2 text-xs px-2 py-1 rounded-full animate-pulse"
+                    style={{
+                      backgroundColor: getThemeColor('colors.success.100', '#dcfce7'),
+                      color: getThemeColor('colors.success.800', '#166534')
+                    }}
+                  >
                     Updating...
                   </span>
                 )}
               </div>
             </div>
             <div className="flex items-center space-x-4">
-              <div className="text-sm text-gray-500">
+              <div 
+                className="text-sm"
+                style={{ 
+                  color: getThemeColor('colors.secondary.500', '#64748b')
+                }}
+              >
                 Last updated: {lastUpdate.toLocaleTimeString()}
               </div>
               <div className="flex items-center space-x-2">
-                <div className={`w-1 h-1 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                <span className="text-xs text-gray-400">
+                <div 
+                  className={`w-1 h-1 rounded-full ${isConnected ? 'animate-pulse' : ''}`}
+                  style={{
+                    backgroundColor: isConnected 
+                      ? getThemeColor('colors.success.400', '#4ade80')
+                      : getThemeColor('colors.secondary.400', '#94a3b8')
+                  }}
+                ></div>
+                <span 
+                  className="text-xs"
+                  style={{ 
+                    color: getThemeColor('colors.secondary.400', '#94a3b8')
+                  }}
+                >
                   {isConnected ? 'Real-time' : 'Offline'}
                 </span>
               </div>
+              <button
+                onClick={toggleGlobalEditMode}
+                className="transition-colors mr-4"
+                style={{
+                  color: isGlobalEditMode ? '#3b82f6' : getThemeColor('colors.secondary.400', '#94a3b8'),
+                  background: isGlobalEditMode ? '#e3f2fd' : 'transparent',
+                  padding: '8px',
+                  borderRadius: '6px',
+                  border: 'none'
+                }}
+                title={isGlobalEditMode ? "Exit Edit Mode" : "Enter Edit Mode"}
+                onMouseEnter={(e) => {
+                  if (!isGlobalEditMode) {
+                    e.target.style.color = getThemeColor('colors.secondary.600', '#475569');
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.target.style.color = isGlobalEditMode ? '#3b82f6' : getThemeColor('colors.secondary.400', '#94a3b8');
+                }}
+              >
+                🎨
+              </button>
               {onClose && (
                 <button
                   onClick={onClose}
-                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                  className="transition-colors"
+                  style={{
+                    color: getThemeColor('colors.secondary.400', '#94a3b8')
+                  }}
+                  onMouseEnter={(e) => {
+                    e.target.style.color = getThemeColor('colors.secondary.600', '#475569');
+                  }}
+                  onMouseLeave={(e) => {
+                    e.target.style.color = getThemeColor('colors.secondary.400', '#94a3b8');
+                  }}
                 >
                   ✕
                 </button>
@@ -822,25 +1018,52 @@ const MonitoringDashboard = ({ onClose }) => {
       </div>
 
       {/* Navigation Tabs */}
-      <div className="bg-white border-b flex-shrink-0">
+      <div 
+        className="border-b flex-shrink-0"
+        style={{
+          background: cardStyle.background || '#ffffff',
+          borderColor: getThemeColor('colors.secondary.200', '#e5e7eb')
+        }}
+      >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex space-x-8">
-            {['overview', 'system', 'http', 'websocket', 'database', 'ai', 'scrapping', 'api', 'logs', 'theme'].map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`py-2 px-1 border-b-2 font-medium text-sm capitalize ${
-                  activeTab === tab
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                {tab === 'api' ? 'API' : 
-                 tab === 'ai' ? 'AI' : 
-                 tab === 'scrapping' ? 'Scrapping' :
-                 tab}
-              </button>
-            ))}
+            {['overview', 'system', 'http', 'websocket', 'database', 'ai', 'scrapping', 'api', 'logs', 'theme', 'csseditor'].map((tab) => {
+              const isActive = activeTab === tab;
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className="py-2 px-1 border-b-2 font-medium text-sm capitalize transition-colors"
+                  style={{
+                    borderBottomColor: isActive 
+                      ? getThemeColor('colors.primary.500', '#3b82f6')
+                      : 'transparent',
+                    color: isActive 
+                      ? getThemeColor('colors.primary.600', '#2563eb')
+                      : getThemeColor('colors.secondary.500', '#64748b'),
+                    fontWeight: isActive ? '600' : '500'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isActive) {
+                      e.target.style.color = getThemeColor('colors.secondary.700', '#334155');
+                      e.target.style.borderBottomColor = getThemeColor('colors.secondary.300', '#cbd5e1');
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isActive) {
+                      e.target.style.color = getThemeColor('colors.secondary.500', '#64748b');
+                      e.target.style.borderBottomColor = 'transparent';
+                    }
+                  }}
+                >
+                  {tab === 'api' ? 'API' : 
+                   tab === 'ai' ? 'AI' : 
+                   tab === 'scrapping' ? 'Scrapping' :
+                   tab === 'csseditor' ? 'CSS Editor' :
+                   tab}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1035,8 +1258,8 @@ const MonitoringDashboard = ({ onClose }) => {
                         {
                           label: 'CPU Usage (%)',
                           data: chartData.cpu,
-                          borderColor: 'rgb(59, 130, 246)',
-                          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                          borderColor: getThemeColor('colors.primary.500', '#3b82f6'),
+                          backgroundColor: getThemeColor('colors.primary.50', 'rgba(59, 130, 246, 0.1)'),
                           tension: 0.1,
                           pointRadius: 0,
                           borderWidth: 2,
@@ -1061,8 +1284,8 @@ const MonitoringDashboard = ({ onClose }) => {
                         {
                           label: 'Memory Usage (%)',
                           data: chartData.memoryUsage,
-                          borderColor: 'rgb(34, 197, 94)',
-                          backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                          borderColor: getThemeColor('colors.success.500', '#22c55e'),
+                          backgroundColor: getThemeColor('colors.success.50', 'rgba(34, 197, 94, 0.1)'),
                           tension: 0.1,
                           pointRadius: 0,
                           borderWidth: 2,
@@ -1205,10 +1428,15 @@ const MonitoringDashboard = ({ onClose }) => {
           <div className="space-y-6">
             {/* Overview Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg shadow p-6 text-white">
+              <div className="websocket-card bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg shadow p-6 text-white transition-all duration-300">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-blue-100 text-sm">Active Connections</p>
+                    <p className="text-blue-100 text-sm flex items-center">
+                      Active Connections
+                      {websocketStreaming && (
+                        <span className="ml-2 w-2 h-2 bg-green-300 rounded-full animate-pulse"></span>
+                      )}
+                    </p>
                     <p className="text-3xl font-bold">{metrics.websocket?.connections?.active || 0}</p>
                     <p className="text-blue-100 text-xs mt-1">Peak: {metrics.websocket?.connections?.peak || 0}</p>
                   </div>
@@ -1220,10 +1448,15 @@ const MonitoringDashboard = ({ onClose }) => {
                 </div>
               </div>
 
-              <div className="bg-gradient-to-r from-green-500 to-green-600 rounded-lg shadow p-6 text-white">
+              <div className="websocket-card bg-gradient-to-r from-green-500 to-green-600 rounded-lg shadow p-6 text-white transition-all duration-300">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-green-100 text-sm">Total Messages</p>
+                    <p className="text-green-100 text-sm flex items-center">
+                      Total Messages
+                      {websocketStreaming && (
+                        <span className="ml-2 w-2 h-2 bg-green-300 rounded-full animate-pulse"></span>
+                      )}
+                    </p>
                     <p className="text-3xl font-bold">{(metrics.websocket?.messages?.sent || 0) + (metrics.websocket?.messages?.received || 0)}</p>
                     <p className="text-green-100 text-xs mt-1">Avg Size: {metrics.websocket?.messages?.avgSize || 0}B</p>
                   </div>
@@ -1235,10 +1468,15 @@ const MonitoringDashboard = ({ onClose }) => {
                 </div>
               </div>
 
-              <div className="bg-gradient-to-r from-purple-500 to-purple-600 rounded-lg shadow p-6 text-white">
+              <div className="websocket-card bg-gradient-to-r from-purple-500 to-purple-600 rounded-lg shadow p-6 text-white transition-all duration-300">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-purple-100 text-sm">Total Sessions</p>
+                    <p className="text-purple-100 text-sm flex items-center">
+                      Total Sessions
+                      {websocketStreaming && (
+                        <span className="ml-2 w-2 h-2 bg-green-300 rounded-full animate-pulse"></span>
+                      )}
+                    </p>
                     <p className="text-3xl font-bold">{metrics.websocket?.connections?.totalSessions || 0}</p>
                     <p className="text-purple-100 text-xs mt-1">Avg Time: {Math.round((metrics.websocket?.performance?.avgConnectionTime || 0) / 1000)}s</p>
                   </div>
@@ -1250,10 +1488,15 @@ const MonitoringDashboard = ({ onClose }) => {
                 </div>
               </div>
 
-              <div className="bg-gradient-to-r from-red-500 to-red-600 rounded-lg shadow p-6 text-white">
+              <div className="websocket-card bg-gradient-to-r from-red-500 to-red-600 rounded-lg shadow p-6 text-white transition-all duration-300">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-red-100 text-sm">Message Errors</p>
+                    <p className="text-red-100 text-sm flex items-center">
+                      Message Errors
+                      {websocketStreaming && (
+                        <span className="ml-2 w-2 h-2 bg-green-300 rounded-full animate-pulse"></span>
+                      )}
+                    </p>
                     <p className="text-3xl font-bold">{metrics.websocket?.messages?.errors || 0}</p>
                     <p className="text-red-100 text-xs mt-1">Error Rate: {((metrics.websocket?.messages?.errors || 0) / Math.max(1, (metrics.websocket?.messages?.sent || 0) + (metrics.websocket?.messages?.received || 0)) * 100).toFixed(2)}%</p>
                   </div>
@@ -1285,8 +1528,8 @@ const MonitoringDashboard = ({ onClose }) => {
                             .filter(conn => conn.type === 'connect' || conn.type === 'disconnect')
                             .slice(-50)
                             .map(conn => conn.active),
-                          borderColor: 'rgb(59, 130, 246)',
-                          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                          borderColor: getThemeColor('colors.primary.500', '#3b82f6'),
+                          backgroundColor: getThemeColor('colors.primary.50', 'rgba(59, 130, 246, 0.1)'),
                           tension: 0.1,
                           fill: true
                         }]
@@ -1386,12 +1629,12 @@ const MonitoringDashboard = ({ onClose }) => {
                   </span>
                 </h3>
                 <div className="space-y-3 max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
-                  {metrics.websocket?.clients && Array.from(metrics.websocket.clients.entries()).length > 0 ? (
-                    Array.from(metrics.websocket.clients.entries()).map(([clientId, client]) => (
+                  {metrics.websocket?.clients && metrics.websocket.clients.length > 0 ? (
+                    metrics.websocket.clients.map(([clientId, client]) => (
                       <div key={clientId} className="border rounded-lg p-3 bg-gray-50">
                         <div className="flex items-center justify-between mb-2">
                           <div className="text-sm font-medium text-gray-900">
-                            {clientId.substr(0, 8)}...
+                            {String(clientId).substring(0, 8)}...
                           </div>
                           <div className="flex items-center space-x-1">
                             <div className="w-2 h-2 bg-green-500 rounded-full"></div>
@@ -1444,8 +1687,8 @@ const MonitoringDashboard = ({ onClose }) => {
               <div className="bg-white rounded-lg shadow p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Message Events</h3>
                 <div className="space-y-2 max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
-                  {metrics.websocket?.messages?.events && Array.from(metrics.websocket.messages.events.entries()).length > 0 ? (
-                    Array.from(metrics.websocket.messages.events.entries())
+                  {metrics.websocket?.messages?.events && metrics.websocket.messages.events.length > 0 ? (
+                    metrics.websocket.messages.events
                       .sort(([,a], [,b]) => b - a)
                       .map(([eventName, count]) => (
                         <div key={eventName} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
@@ -1475,8 +1718,8 @@ const MonitoringDashboard = ({ onClose }) => {
                 <div className="mb-6">
                   <h4 className="text-sm font-semibold text-gray-700 mb-3">Disconnect Reasons</h4>
                   <div className="space-y-2">
-                    {metrics.websocket?.performance?.disconnectReasons && Array.from(metrics.websocket.performance.disconnectReasons.entries()).length > 0 ? (
-                      Array.from(metrics.websocket.performance.disconnectReasons.entries())
+                    {metrics.websocket?.performance?.disconnectReasons && metrics.websocket.performance.disconnectReasons.length > 0 ? (
+                      metrics.websocket.performance.disconnectReasons
                         .sort(([,a], [,b]) => b - a)
                         .map(([reason, count]) => (
                           <div key={reason} className="flex items-center justify-between text-sm">
@@ -1494,8 +1737,8 @@ const MonitoringDashboard = ({ onClose }) => {
                 <div className="mb-6">
                   <h4 className="text-sm font-semibold text-gray-700 mb-3">Error Types</h4>
                   <div className="space-y-2">
-                    {metrics.websocket?.performance?.errorTypes && Array.from(metrics.websocket.performance.errorTypes.entries()).length > 0 ? (
-                      Array.from(metrics.websocket.performance.errorTypes.entries())
+                    {metrics.websocket?.performance?.errorTypes && metrics.websocket.performance.errorTypes.length > 0 ? (
+                      metrics.websocket.performance.errorTypes
                         .sort(([,a], [,b]) => b - a)
                         .map(([errorType, count]) => (
                           <div key={errorType} className="flex items-center justify-between text-sm">
@@ -1530,19 +1773,292 @@ const MonitoringDashboard = ({ onClose }) => {
               </div>
             </div>
 
+            {/* Network Performance Metrics */}
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Network Performance</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-blue-600">{formatBytes(metrics.websocket?.messages?.totalSize || 0)}</p>
+                  <p className="text-sm text-gray-600">Total Data Transfer</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-green-600">{formatBytes(metrics.websocket?.messages?.avgSize || 0)}</p>
+                  <p className="text-sm text-gray-600">Avg Message Size</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-purple-600">
+                    {metrics.websocket?.connections?.totalSessions ? 
+                      Math.round((metrics.websocket?.messages?.totalSize || 0) / metrics.websocket.connections.totalSessions) : 0}
+                  </p>
+                  <p className="text-sm text-gray-600">Bytes/Session</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-orange-600">
+                    {Math.round((metrics.websocket?.performance?.avgConnectionTime || 0) / 1000)}s
+                  </p>
+                  <p className="text-sm text-gray-600">Avg Session Duration</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Message Event Statistics */}
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Message Events Breakdown</h3>
+              <div className="space-y-3">
+                {metrics.websocket?.messages?.events && metrics.websocket.messages.events.length > 0 ? (
+                  metrics.websocket.messages.events
+                    .sort(([,a], [,b]) => b - a)
+                    .map(([eventName, count]) => {
+                      const totalMessages = (metrics.websocket?.messages?.sent || 0) + (metrics.websocket?.messages?.received || 0);
+                      const percentage = totalMessages > 0 ? ((count / totalMessages) * 100).toFixed(1) : 0;
+                      return (
+                        <div key={eventName} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                            <span className="text-sm font-medium text-gray-900">{eventName}</span>
+                          </div>
+                          <div className="flex items-center space-x-4">
+                            <span className="text-sm text-gray-600">{percentage}%</span>
+                            <span className="text-sm font-semibold text-gray-900">{count}</span>
+                            <div className="w-20 bg-gray-200 rounded-full h-2">
+                              <div 
+                                className="bg-blue-500 h-2 rounded-full" 
+                                style={{width: `${Math.min(100, percentage)}%`}}
+                              ></div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                ) : (
+                  <div className="text-center py-4 text-gray-500">
+                    <p>No message events recorded</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Detailed Client Statistics */}
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center justify-between">
+                Client Details
+                <span className="text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
+                  {metrics.websocket?.clients?.length || 0} connected
+                </span>
+              </h3>
+              <div className="space-y-3 max-h-80 overflow-y-auto">
+                {metrics.websocket?.clients && metrics.websocket.clients.length > 0 ? (
+                  metrics.websocket.clients.map(([clientId, client]) => {
+                    const sessionDuration = Date.now() - client.connectedAt;
+                    const dataRate = sessionDuration > 0 ? (client.totalDataSent / (sessionDuration / 1000)).toFixed(1) : 0;
+                    return (
+                      <div key={clientId} className="border rounded-lg p-4 bg-gray-50">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="text-sm font-medium text-gray-900 font-mono">
+                            {String(clientId).substring(0, 12)}...
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                            <span className="text-xs text-green-600 font-medium">ACTIVE</span>
+                          </div>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                          <div>
+                            <p className="text-gray-600">IP Address</p>
+                            <p className="font-mono text-gray-900">{client.ip}</p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600">Connected</p>
+                            <p className="font-medium text-gray-900">
+                              {Math.round(sessionDuration / 1000)}s ago
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600">Messages</p>
+                            <p className="font-medium text-gray-900">
+                              ↑{client.messagesSent} ↓{client.messagesReceived}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600">Data Transfer</p>
+                            <p className="font-medium text-gray-900">
+                              {formatBytes(client.totalDataSent + client.totalDataReceived)}
+                            </p>
+                          </div>
+                        </div>
+                        
+                        <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                          <div>
+                            <p className="text-gray-600">Data Rate</p>
+                            <p className="font-medium text-blue-600">{dataRate} B/s</p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600">Last Activity</p>
+                            <p className="font-medium text-gray-900">
+                              {Math.round((Date.now() - client.lastActivity) / 1000)}s
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600">Events</p>
+                            <p className="font-medium text-gray-900">
+                              {client.events ? client.events.length : 0} types
+                            </p>
+                          </div>
+                        </div>
+                        
+                        {client.events && client.events.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-gray-200">
+                            <p className="text-xs text-gray-600 mb-2">Event Distribution:</p>
+                            <div className="flex flex-wrap gap-1">
+                              {client.events.map(([eventType, eventCount]) => (
+                                <span key={eventType} className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
+                                  {eventType}: {eventCount}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        
+                        <div className="mt-3 pt-3 border-t border-gray-200">
+                          <p className="text-xs text-gray-600 mb-1">User Agent:</p>
+                          <p className="text-xs text-gray-800 font-mono truncate" title={client.userAgent}>
+                            {client.userAgent}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    <svg className="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>
+                    </svg>
+                    <p>No active WebSocket clients</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Connection History and Analytics */}
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Connection Analytics</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-3">Connection Statistics</h4>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Total Connections</span>
+                      <span className="font-medium">{metrics.websocket?.connections?.total || 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Currently Active</span>
+                      <span className="font-medium text-green-600">{metrics.websocket?.connections?.active || 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Peak Concurrent</span>
+                      <span className="font-medium text-blue-600">{metrics.websocket?.connections?.peak || 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Total Sessions</span>
+                      <span className="font-medium">{metrics.websocket?.connections?.totalSessions || 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Disconnect Rate</span>
+                      <span className="font-medium">
+                        {metrics.websocket?.connections?.totalSessions > 0 ? 
+                          (((metrics.websocket.connections.totalSessions - metrics.websocket.connections.active) / metrics.websocket.connections.totalSessions * 100).toFixed(1)) : 0}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-3">Message Statistics</h4>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Messages Sent</span>
+                      <span className="font-medium text-blue-600">{metrics.websocket?.messages?.sent || 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Messages Received</span>
+                      <span className="font-medium text-green-600">{metrics.websocket?.messages?.received || 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Message Errors</span>
+                      <span className="font-medium text-red-600">{metrics.websocket?.messages?.errors || 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Success Rate</span>
+                      <span className="font-medium text-green-600">
+                        {((metrics.websocket?.messages?.sent || 0) + (metrics.websocket?.messages?.received || 0)) > 0 ? 
+                          (((metrics.websocket?.messages?.sent || 0) + (metrics.websocket?.messages?.received || 0) - (metrics.websocket?.messages?.errors || 0)) / 
+                           ((metrics.websocket?.messages?.sent || 0) + (metrics.websocket?.messages?.received || 0)) * 100).toFixed(1) : 100}%
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Avg Message Rate</span>
+                      <span className="font-medium">
+                        {metrics.websocket?.connections?.active > 0 ? 
+                          (((metrics.websocket?.messages?.sent || 0) + (metrics.websocket?.messages?.received || 0)) / metrics.websocket.connections.active).toFixed(1) : 0}/client
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Disconnect Reasons and Error Analysis */}
+            {(metrics.websocket?.performance?.disconnectReasons?.length > 0 || metrics.websocket?.performance?.errorTypes?.length > 0) && (
+              <div className="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Error Analysis</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {metrics.websocket?.performance?.disconnectReasons?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 mb-3">Disconnect Reasons</h4>
+                      <div className="space-y-2">
+                        {metrics.websocket.performance.disconnectReasons
+                          .sort(([,a], [,b]) => b - a)
+                          .map(([reason, count]) => (
+                            <div key={reason} className="flex items-center justify-between text-sm p-2 bg-red-50 rounded">
+                              <span className="text-gray-700">{reason}</span>
+                              <span className="font-semibold text-red-600">{count}</span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                  {metrics.websocket?.performance?.errorTypes?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 mb-3">Error Types</h4>
+                      <div className="space-y-2">
+                        {metrics.websocket.performance.errorTypes
+                          .sort(([,a], [,b]) => b - a)
+                          .map(([errorType, count]) => (
+                            <div key={errorType} className="flex items-center justify-between text-sm p-2 bg-orange-50 rounded">
+                              <span className="text-gray-700">{errorType}</span>
+                              <span className="font-semibold text-orange-600">{count}</span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Recent Activity Log */}
             <div className="bg-white rounded-lg shadow p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center justify-between">
                 Recent WebSocket Activity
                 <button 
-                  onClick={() => setStreamingActive(!streamingActive)}
-                  className={`px-3 py-1 rounded-full text-xs font-medium ${
-                    streamingActive 
-                      ? 'bg-green-100 text-green-800' 
-                      : 'bg-gray-100 text-gray-800'
+                  onClick={() => setWebsocketStreaming(!websocketStreaming)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                    websocketStreaming 
+                      ? 'bg-green-100 text-green-800 hover:bg-green-200' 
+                      : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
                   }`}
                 >
-                  {streamingActive ? '🟢 Live' : '⏸️ Paused'}
+                  {websocketStreaming ? '🟢 Live' : '⏸️ Paused'}
                 </button>
               </h3>
               <div className="max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
@@ -1858,6 +2374,11 @@ const MonitoringDashboard = ({ onClose }) => {
         {/* Theme Tab */}
         {activeTab === 'theme' && (
           <ThemeEditor />
+        )}
+
+        {/* CSS Editor Tab */}
+        {activeTab === 'csseditor' && (
+          <AdvancedCSSEditor />
         )}
       </div>
 
