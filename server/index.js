@@ -1038,7 +1038,7 @@ app.get('/api/theme', async (req, res) => {
       res.json(JSON.parse(theme));
     } else {
       // Return default theme if none exists
-      const defaultTheme = require('../client/src/theme/defaultTheme.json');
+      const defaultTheme = require('./defaultTheme.json');
       res.json(defaultTheme);
     }
   } catch (error) {
@@ -1081,7 +1081,7 @@ app.delete('/api/theme', async (req, res) => {
     await db.deleteSetting('themeLastUpdated');
     
     // Load default theme
-    const defaultTheme = require('../client/src/theme/defaultTheme.json');
+    const defaultTheme = require('./defaultTheme.json');
     
     // Emit theme reset to all connected clients
     io.emit('theme-updated', defaultTheme);

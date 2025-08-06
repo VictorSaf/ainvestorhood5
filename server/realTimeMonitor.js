@@ -334,6 +334,9 @@ class RealTimeMonitor extends EventEmitter {
       if (res.statusCode >= 400) {
         routeStats.errors++;
         
+        // Get request data from active requests
+        const requestData = monitor.activeRequests.get(requestId);
+        
         // Store error details
         const errorDetail = {
           id: requestId,
