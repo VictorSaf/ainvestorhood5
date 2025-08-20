@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Key, AlertCircle, CheckCircle, Brain, Server } from 'lucide-react';
 import axios from 'axios';
+import ScrapingPanel from './ScrapingPanel';
 
 const SetupModal = ({ onComplete }) => {
   const [aiProvider, setAiProvider] = useState('openai');
@@ -22,6 +23,7 @@ const SetupModal = ({ onComplete }) => {
   useEffect(() => {
     fetchOllamaModels();
     loadExistingConfig();
+    loadAISettings();
   }, []);
 
   const loadExistingConfig = async () => {
@@ -43,6 +45,19 @@ const SetupModal = ({ onComplete }) => {
       }
     } catch (error) {
       console.error('Error loading config:', error);
+    }
+  };
+
+  const loadAISettings = async () => {
+    try {
+      const res = await axios.get('http://localhost:8080/api/ai-settings');
+      if (res.data) {
+        if (res.data.analysisTokens) setAnalysisTokens(res.data.analysisTokens);
+        if (res.data.chatTokens) setChatTokens(res.data.chatTokens);
+        if (res.data.minIntervalSec) setMinIntervalSec(res.data.minIntervalSec);
+      }
+    } catch (e) {
+      // ignore
     }
   };
 
@@ -122,6 +137,12 @@ const SetupModal = ({ onComplete }) => {
       });
       
       console.log('✅ Server response:', response.data);
+      // Save AI runtime settings
+      await axios.post('http://localhost:8080/api/ai-settings', {
+        analysisTokens: Number(analysisTokens),
+        chatTokens: Number(chatTokens),
+        minIntervalSec: Number(minIntervalSec)
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 10000 });
       console.log('✅ Setup completed successfully!');
       onComplete();
     } catch (error) {

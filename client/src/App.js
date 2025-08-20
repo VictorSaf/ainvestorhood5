@@ -8,14 +8,17 @@ import EditModeToolbar from './components/EditModeToolbar';
 import { EditModeProvider } from './hooks/useEditMode';
 import { Layout } from './components/ui';
 import axios from 'axios';
+import SettingsTabs from './components/SettingsTabs';
 
 function App() {
   const [news, setNews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showSetup, setShowSetup] = useState(false);
+  const [showSettingsTabs, setShowSettingsTabs] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
   const [showMonitoring, setShowMonitoring] = useState(false);
   const [showAIDashboard, setShowAIDashboard] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const [socket, setSocket] = useState(null);
 
   useEffect(() => {
@@ -54,7 +57,7 @@ function App() {
       const response = await axios.get('http://localhost:8080/api/setup-status');
       const hasKey = response.data.hasApiKey;
       setHasApiKey(hasKey);
-      setShowSetup(!hasKey);
+      setShowSetup(false);
       if (!hasKey) {
         setLoading(false);
       }
@@ -93,6 +96,19 @@ function App() {
       }, 2000);
     } catch (error) {
       console.error('Error triggering news collection:', error);
+    }
+  };
+
+  const resetAndRescrape = async () => {
+    try {
+      if (!window.confirm('Delete all articles and start a fresh scraping run?')) return;
+      // Optimistically clear feed immediately
+      setNews([]);
+      await axios.post('http://localhost:8080/api/news/reset');
+      // rely on websocket/live updates; also refresh list after a short delay
+      setTimeout(() => { loadNews(); loadStats(); }, 2000);
+    } catch (error) {
+      console.error('Error resetting news:', error);
     }
   };
 

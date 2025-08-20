@@ -208,7 +208,7 @@ const MonitoringDashboard = ({ onClose }) => {
       setIsConnected(false);
     });
 
-    // Listen for real-time metrics updates
+    // Listen for real-time metrics updates (ensure we always have a metrics object)
     socketRef.current.on('systemMetrics', (data) => {
       console.log('🔄 Real-time systemMetrics received:', {
         cpu: data.cpu?.usage,
@@ -1075,16 +1075,30 @@ const MonitoringDashboard = ({ onClose }) => {
             {/* System Overview */}
             <div className="bg-white rounded-lg shadow p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">System</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">CPU Usage</span>
-                  <span className="font-medium">{metrics.system?.cpu?.usage || 0}%</span>
+              <div className="space-y-4">
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-600">CPU</span>
+                    <span className="font-medium">{metrics.system?.cpu?.usage || 0}%</span>
+                  </div>
+                  <div className="w-full h-24 bg-gray-50 rounded border">
+                    <canvas ref={miniCpuRef} style={{ width: '100%', height: '100%' }} />
+                  </div>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">Memory</span>
                   <span className="font-medium">{console.log('💻 UI MEMORY DISPLAY:', metrics.system?.memory?.percentage) || (metrics.system?.memory?.percentage || 0)}%</span>
                 </div>
-                <div className="flex justify-between">
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-600">GPU</span>
+                    <span className="font-medium">{metrics.system?.gpu?.usage || 0}%</span>
+                  </div>
+                  <div className="w-full h-24 bg-gray-50 rounded border">
+                    <canvas ref={miniGpuRef} style={{ width: '100%', height: '100%' }} />
+                  </div>
+                </div>
+                <div className="flex justify-between text-sm">
                   <span className="text-gray-600">Uptime</span>
                   <span className="font-medium">{formatUptime((metrics.system?.uptime || 0) * 1000)}</span>
                 </div>
@@ -1093,58 +1107,81 @@ const MonitoringDashboard = ({ onClose }) => {
 
             {/* HTTP Overview */}
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">HTTP</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Total Requests</span>
-                  <span className="font-medium">{metrics.http?.requests?.total || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Active</span>
-                  <span className="font-medium">{metrics.http?.requests?.active || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Errors</span>
-                  <span className="font-medium text-red-500">{metrics.http?.requests?.errors || 0}</span>
-                </div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">HTTP</h3>
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-gray-600">Active</span>
+                <span className="font-medium">{metrics.http?.requests?.active || 0}</span>
+              </div>
+              <div className="w-full h-10 bg-gray-50 rounded border mb-3">
+                <canvas ref={miniHttpRef} style={{ width: '100%', height: '100%' }} />
+              </div>
+              <div className="flex justify-between text-xs text-gray-600">
+                <span>Total: {metrics.http?.requests?.total || 0}</span>
+                <span className="text-red-500">Errors: {metrics.http?.requests?.errors || 0}</span>
               </div>
             </div>
 
             {/* Database Overview */}
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Database</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Total Queries</span>
-                  <span className="font-medium">{metrics.database?.queries?.total || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Active</span>
-                  <span className="font-medium">{metrics.database?.queries?.active || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Avg Time</span>
-                  <span className="font-medium">{Math.round(metrics.database?.queries?.avgTime || 0)}ms</span>
-                </div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">Database</h3>
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-gray-600">Active</span>
+                <span className="font-medium">{metrics.database?.queries?.active || 0}</span>
+              </div>
+              <div className="w-full h-10 bg-gray-50 rounded border mb-3">
+                <canvas ref={miniDbRef} style={{ width: '100%', height: '100%' }} />
+              </div>
+              <div className="flex justify-between text-xs text-gray-600">
+                <span>Total: {metrics.database?.queries?.total || 0}</span>
+                <span>Avg: {Math.round(metrics.database?.queries?.avgTime || 0)}ms</span>
               </div>
             </div>
 
             {/* AI Overview */}
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">AI Service</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Requests</span>
-                  <span className="font-medium">{metrics.ai?.requests?.total || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Tokens Used</span>
-                  <span className="font-medium">{metrics.ai?.tokens?.used?.toLocaleString() || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Cost</span>
-                  <span className="font-medium">${(metrics.ai?.tokens?.cost || 0).toFixed(4)}</span>
-                </div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">AI Service</h3>
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-gray-600">Avg RT</span>
+                <span className="font-medium">{Math.round(metrics.ai?.avgResponseTime || 0)}ms</span>
+              </div>
+              <div className="w-full h-10 bg-gray-50 rounded border mb-3">
+                <canvas ref={miniAiRef} style={{ width: '100%', height: '100%' }} />
+              </div>
+              <div className="flex justify-between text-xs text-gray-600">
+                <span>Req: {metrics.ai?.requests?.total || 0}</span>
+                <span>Tokens: {metrics.ai?.tokens?.used?.toLocaleString() || 0}</span>
+              </div>
+            </div>
+
+            {/* WebSocket Overview */}
+            <div className="bg-white rounded-lg shadow p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">WebSocket</h3>
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-gray-600">Active</span>
+                <span className="font-medium">{metrics.websocket?.connections?.active || 0}</span>
+              </div>
+              <div className="w-full h-10 bg-gray-50 rounded border mb-3">
+                <canvas ref={miniWsRef} style={{ width: '100%', height: '100%' }} />
+              </div>
+              <div className="flex justify-between text-xs text-gray-600">
+                <span>Total: {metrics.websocket?.connections?.total || 0}</span>
+                <span>Msgs: {(metrics.websocket?.messages?.sent || 0) + (metrics.websocket?.messages?.received || 0)}</span>
+              </div>
+            </div>
+
+            {/* Scrapping Overview */}
+            <div className="bg-white rounded-lg shadow p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">Scrapping</h3>
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-gray-600">Articles (last run)</span>
+                <span className="font-medium">{metrics.scrapy?.lastRunArticles || 0}</span>
+              </div>
+              <div className="w-full h-10 bg-gray-50 rounded border mb-3">
+                <canvas ref={miniScrapRef} style={{ width: '100%', height: '100%' }} />
+              </div>
+              <div className="flex justify-between text-xs text-gray-600">
+                <span>Status: {metrics.scrapy?.status || 'idle'}</span>
+                <span className="text-red-500">Err: {metrics.scrapy?.lastRunErrors || 0}</span>
               </div>
             </div>
 
@@ -1329,35 +1366,32 @@ const MonitoringDashboard = ({ onClose }) => {
         {/* HTTP Tab */}
         {activeTab === 'http' && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 gap-6">
               <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Request Stats</h3>
-                <div className="space-y-3">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Total</span>
-                    <span className="font-medium">{metrics.http?.requests?.total || 0}</span>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Top Endpoints by Requests</h3>
+                {(() => { const routeEntries = getEntries(metrics?.http?.routes); return routeEntries.length > 0 ? (
+                  <div className="h-72">
+                    <Bar
+                      data={{
+                        labels: routeEntries.sort((a,b)=> (b[1]?.requests||0)-(a[1]?.requests||0)).slice(0,12).map(([route])=>route),
+                        datasets: [{ label: 'Requests', data: routeEntries.sort((a,b)=> (b[1]?.requests||0)-(a[1]?.requests||0)).slice(0,12).map(([,s])=> (s?.requests||0)), backgroundColor: 'rgba(14,165,233,0.6)' }]
+                      }}
+                      options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { autoSkip: false, maxRotation: 35 } }, y: { beginAtZero: true, ticks: { precision: 0 } } } }}
+                    />
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Active</span>
-                    <span className="font-medium text-blue-500">{metrics.http?.requests?.active || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Errors</span>
-                    <span className="font-medium text-red-500">{metrics.http?.requests?.errors || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Avg Response Time</span>
-                    <span className="font-medium">{Math.round(metrics.http?.requests?.avgResponseTime || 0)}ms</span>
-                  </div>
-                </div>
+                ) : (<p className="text-sm text-gray-500">No route data</p>) })()}
               </div>
-
               <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Response Stats</h3>
-                <div className="space-y-3">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Success</span>
-                    <span className="font-medium text-green-500">{metrics.http?.responses?.success || 0}</span>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Top Endpoints by Errors</h3>
+                {(() => { const routeEntries = getEntries(metrics?.http?.routes); return routeEntries.length > 0 ? (
+                  <div className="h-72">
+                    <Bar
+                      data={{
+                        labels: routeEntries.sort((a,b)=> (b[1]?.errors||0)-(a[1]?.errors||0)).slice(0,12).map(([route])=>route),
+                        datasets: [{ label: 'Errors', data: routeEntries.sort((a,b)=> (b[1]?.errors||0)-(a[1]?.errors||0)).slice(0,12).map(([,s])=> (s?.errors||0)), backgroundColor: 'rgba(239,68,68,0.6)' }]
+                      }}
+                      options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { autoSkip: false, maxRotation: 35 } }, y: { beginAtZero: true, ticks: { precision: 0 } } } }}
+                    />
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-600">Error</span>
@@ -1419,7 +1453,97 @@ const MonitoringDashboard = ({ onClose }) => {
                   </table>
                 </div>
               </div>
-            )}
+            ) : null })()}
+          </div>
+        )}
+        {/* System Tab removed as requested */}
+
+        {/* HTTP Tab */}
+        {activeTab === 'http' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* KPIs */}
+              <div className="bg-white rounded-lg shadow p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">KPIs (last 10m)</h3>
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <div className="text-xs text-gray-500">Active</div>
+                    <div className="text-2xl font-semibold text-blue-600">{metrics.http?.requests?.active || 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Errors</div>
+                    <div className="text-2xl font-semibold text-red-600">{metrics.http?.requests?.errors || 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Avg RT</div>
+                    <div className="text-2xl font-semibold text-indigo-600">{Math.round(metrics.http?.requests?.avgResponseTime || 0)}ms</div>
+                  </div>
+                </div>
+              </div>
+              {/* Bar charts (bucketed 1m) */}
+              <div className="bg-white rounded-lg shadow p-6 lg:col-span-2">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Last 10 minutes</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="h-56">
+                    <Bar data={makeBarDataset('httpActive','Active','rgba(14,165,233,0.7)')}
+                      options={{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 } } },
+                        onClick: (evt, elements)=>{ if (!elements?.length) return; const el=elements[0]; const d=el.dataset; const idx=el.index; openBucketDetails('HTTP Active', d.bucketStartTs[idx], d.bucketMs, ['httpActive']); } }} />
+                  </div>
+                  <div className="h-56">
+                    <Bar data={makeBarDataset('httpErrors','Errors','rgba(239,68,68,0.7)','max')}
+                      options={{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 } } },
+                        onClick: (evt, elements)=>{ if (!elements?.length) return; const el=elements[0]; const d=el.dataset; const idx=el.index; openBucketDetails('HTTP Errors', d.bucketStartTs[idx], d.bucketMs, ['httpErrors']); } }} />
+                  </div>
+                  <div className="h-56">
+                    <Bar data={makeBarDataset('httpAvgRt','Avg RT','rgba(139,92,246,0.7)','avg')}
+                      options={{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true } },
+                        onClick: (evt, elements)=>{ if (!elements?.length) return; const el=elements[0]; const d=el.dataset; const idx=el.index; openBucketDetails('HTTP Avg RT', d.bucketStartTs[idx], d.bucketMs, ['httpAvgRt']); } }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Top routes tables retained */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white rounded-lg shadow p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Top Routes (by Requests)</h3>
+                {metrics.http?.routes && metrics.http.routes.size > 0 ? (
+                  <div className="h-64">
+                    <Bar
+                      data={() => {
+                        const entries = Array.from(metrics.http.routes.entries())
+                          .sort((a,b)=>b[1].requests - a[1].requests)
+                          .slice(0,10);
+                        return {
+                          labels: entries.map(([route]) => route),
+                          datasets: [{ label: 'Requests', data: entries.map(([,s]) => s.requests), backgroundColor: 'rgba(14,165,233,0.7)' }]
+                        };
+                      }}
+                      options={{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ x:{ ticks:{ autoSkip:false, maxRotation:40 } }, y:{ beginAtZero:true, ticks:{ precision:0 } } } }}
+                    />
+                  </div>
+                ) : (<p className="text-sm text-gray-500">No route data</p>)}
+              </div>
+              <div className="bg-white rounded-lg shadow p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Top Error Routes</h3>
+                {metrics.http?.routes && metrics.http.routes.size > 0 ? (
+                  <div className="h-64">
+                    <Bar
+                      data={() => {
+                        const entries = Array.from(metrics.http.routes.entries())
+                          .sort((a,b)=>b[1].errors - a[1].errors)
+                          .slice(0,10);
+                        return {
+                          labels: entries.map(([route]) => route),
+                          datasets: [{ label: 'Errors', data: entries.map(([,s]) => s.errors), backgroundColor: 'rgba(239,68,68,0.7)' }]
+                        };
+                      }}
+                      options={{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ x:{ ticks:{ autoSkip:false, maxRotation:40 } }, y:{ beginAtZero:true, ticks:{ precision:0 } } } }}
+                    />
+                  </div>
+                ) : (<p className="text-sm text-gray-500">No route data</p>)}
+              </div>
+            </div>
           </div>
         )}
 
@@ -2119,63 +2243,64 @@ const MonitoringDashboard = ({ onClose }) => {
 
         {/* Database Tab */}
         {activeTab === 'database' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Query Stats</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Total Queries</span>
-                  <span className="font-medium">{metrics.database?.queries?.total || 0}</span>
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* KPIs */}
+              <div className="bg-white rounded-lg shadow p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">KPIs (last 10m)</h3>
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <div className="text-xs text-gray-500">Active</div>
+                    <div className="text-2xl font-semibold text-green-600">{metrics.database?.queries?.active || 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Errors</div>
+                    <div className="text-2xl font-semibold text-red-600">{metrics.database?.queries?.errors || 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Avg Time</div>
+                    <div className="text-2xl font-semibold text-indigo-600">{Math.round(metrics.database?.queries?.avgTime || 0)}ms</div>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Active Queries</span>
-                  <span className="font-medium text-blue-500">{metrics.database?.queries?.active || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Query Errors</span>
-                  <span className="font-medium text-red-500">{metrics.database?.queries?.errors || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Avg Query Time</span>
-                  <span className="font-medium">{Math.round(metrics.database?.queries?.avgTime || 0)}ms</span>
+              </div>
+              {/* Bars */}
+              <div className="bg-white rounded-lg shadow p-6 lg:col-span-2">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Last 10 minutes</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="h-56">
+                    <Bar data={makeBarDataset('dbActive','Active','rgba(34,197,94,0.7)','max')}
+                      options={{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 } } },
+                        onClick: (evt, elements)=>{ if (!elements?.length) return; const el=elements[0]; const d=el.dataset; const idx=el.index; openBucketDetails('DB Active', d.bucketStartTs[idx], d.bucketMs, ['dbActive']); } }} />
+                  </div>
+                  <div className="h-56">
+                    <Bar data={makeBarDataset('dbErrors','Errors','rgba(239,68,68,0.7)','max')}
+                      options={{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 } } },
+                        onClick: (evt, elements)=>{ if (!elements?.length) return; const el=elements[0]; const d=el.dataset; const idx=el.index; openBucketDetails('DB Errors', d.bucketStartTs[idx], d.bucketMs, ['dbErrors']); } }} />
+                  </div>
+                  <div className="h-56">
+                    <Bar data={makeBarDataset('dbAvg','Avg','rgba(99,102,241,0.7)','avg')}
+                      options={{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true } },
+                        onClick: (evt, elements)=>{ if (!elements?.length) return; const el=elements[0]; const d=el.dataset; const idx=el.index; openBucketDetails('DB Avg', d.bucketStartTs[idx], d.bucketMs, ['dbAvg']); } }} />
+                  </div>
                 </div>
               </div>
             </div>
 
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Operation Types</h3>
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Read Operations</span>
-                  <span className="font-medium text-blue-500">{metrics.database?.operations?.read || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Write Operations</span>
-                  <span className="font-medium text-green-500">{metrics.database?.operations?.write || 0}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Delete Operations</span>
-                  <span className="font-medium text-red-500">{metrics.database?.operations?.delete || 0}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Active Queries */}
-            {metrics.activeQueries?.length > 0 && (
-              <div className="lg:col-span-2 bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Active Queries</h3>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {metrics.activeQueries.map((query, index) => (
-                    <div key={index} className="border-b pb-2 mb-2 last:border-b-0">
-                      <div className="text-sm font-mono">{query.query}</div>
-                      <div className="text-xs text-gray-500">
-                        Type: {query.type} | Duration: {Date.now() - query.startTime}ms
-                      </div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Active Queries</h3>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {metrics.activeQueries?.length > 0 ? (
+                  metrics.activeQueries.map((query, index) => (
+                    <div key={index} className="border rounded p-3">
+                      <div className="text-sm font-mono truncate">{query.query}</div>
+                      <div className="text-xs text-gray-500">Type: {query.type} | Duration: {Date.now() - query.startTime}ms</div>
                     </div>
-                  ))}
-                </div>
+                  ))
+                ) : (
+                  <p className="text-gray-500 text-sm">No active queries</p>
+                )}
               </div>
-            )}
+            </div>
           </div>
         )}
 
@@ -2521,3 +2646,42 @@ const MonitoringDashboard = ({ onClose }) => {
 };
 
 export default MonitoringDashboard;
+
+// Modal UI (simple inline to avoid extra files)
+export const BucketModal = ({ open, title, items, onClose }) => {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[2000] bg-black/40 flex items-center justify-center">
+      <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-2 border-b">
+          <div className="text-sm font-semibold text-gray-800">{title}</div>
+          <button className="text-gray-500 hover:text-gray-700" onClick={onClose}>✕</button>
+        </div>
+        <div className="p-4 overflow-auto">
+          {items && items.length ? (
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b">
+                  <th className="text-left py-1 pr-2">Time</th>
+                  <th className="text-left py-1 pr-2">Series</th>
+                  <th className="text-left py-1">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it, idx) => (
+                  <tr key={idx} className="border-b last:border-0">
+                    <td className="py-1 pr-2 whitespace-nowrap">{new Date(it.t).toLocaleTimeString()}</td>
+                    <td className="py-1 pr-2">{it.key}</td>
+                    <td className="py-1">{it.v}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="text-gray-500 text-sm">No data in this window</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

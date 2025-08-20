@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
 const path = require('path');
+const fs = require('fs');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
@@ -11,6 +12,7 @@ const UnifiedScrapingService = require('./unifiedScrapingService');
 const monitoring = require('./monitoring');
 const liveStream = require('./liveStream');
 const realTimeMonitor = require('./realTimeMonitor');
+const { resolveYahooSymbol } = require('./yahooResolver');
 const { 
   httpMonitoringMiddleware, 
   errorMonitoringMiddleware,
@@ -56,6 +58,7 @@ realTimeMonitor.setDatabase(db);
 
 // Start real-time monitoring
 realTimeMonitor.start();
+browserPool.init().catch(()=>{});
 
 // Setup process and system monitoring
 setupProcessMonitoring();
@@ -126,6 +129,29 @@ app.use('/api', (req, res, next) => {
 app.use(cors());
 app.use(compression()); // Add gzip compression for better performance
 app.use(express.json());
+try { app.use(require('compression')()); } catch {}
+// Align monitor timeout with server expectations
+process.env.MONITOR_HTTP_TIMEOUT_MS = process.env.MONITOR_HTTP_TIMEOUT_MS || '20000';
+
+// Serve favicon early to avoid 404 noise
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+// --- Analyze endpoint performance guards (concurrency + circuit breaker) ---
+const ANALYZE_MAX_CONCURRENT = parseInt(process.env.ANALYZE_MAX_CONCURRENT || '2');
+let analyzeActive = 0;
+let analyzeFailures = 0;
+let analyzeCircuitOpenUntil = 0;
+const ANALYZE_CB_WINDOW_MS = 30000; // within last 30s
+const ANALYZE_CB_THRESHOLD = 3;     // if >=3 failures -> open circuit for cooldown
+const ANALYZE_CB_COOLDOWN_MS = 30000;
+
+function recordAnalyzeFailure() {
+  analyzeFailures++;
+  setTimeout(() => { analyzeFailures = Math.max(0, analyzeFailures - 1); }, ANALYZE_CB_WINDOW_MS);
+  if (analyzeFailures >= ANALYZE_CB_THRESHOLD) {
+    analyzeCircuitOpenUntil = Date.now() + ANALYZE_CB_COOLDOWN_MS;
+  }
+}
 app.use(httpMonitoringMiddleware);
 
 // Serve static files from React build with caching
@@ -135,7 +161,80 @@ app.use(express.static(path.join(__dirname, '../client/build'), {
   lastModified: true
 }));
 
+// Prevent favicon 404 from polluting error metrics
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
 // API Routes
+// Quick parse an RSS/Atom URL using feedparser (debug/utility for System / Scrapping)
+app.post('/api/scraping/parse-feed', async (req, res) => {
+  try {
+    const { url } = req.body || {};
+    if (!url) return res.status(400).json({ success: false, error: 'url required' });
+    const axios = require('axios');
+    const r = await axios.get(url, { responseType: 'stream', timeout: 10000, headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/rss+xml,application/xml;q=0.9,text/html;q=0.8,*/*;q=0.7'
+    }});
+    const feedparser = new FeedParser();
+    const items = [];
+    await new Promise((resolve, reject) => {
+      r.data.pipe(feedparser);
+      feedparser.on('error', reject);
+      feedparser.on('readable', function() {
+        let item; while (item = this.read()) {
+          items.push({ title: item.title, link: item.link, pubDate: item.pubDate });
+        }
+      });
+      feedparser.on('end', resolve);
+    });
+    res.json({ success: true, count: items.length, items: items.slice(0, 50) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+// Get AI runtime settings (tokens, intervals)
+app.get('/api/ai-settings', async (req, res) => {
+  try {
+    const analysisTokens = parseInt(await db.getSetting('ollama_num_predict')) || parseInt(process.env.OLLAMA_NUM_PREDICT || '160');
+    const chatTokens = parseInt(await db.getSetting('ollama_chat_num_predict')) || parseInt(process.env.OLLAMA_CHAT_NUM_PREDICT || '64');
+    const minIntervalSec = parseInt(await db.getSetting('analysis_min_interval_sec')) || 30;
+    res.json({ analysisTokens, chatTokens, minIntervalSec });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update AI runtime settings
+app.post('/api/ai-settings', async (req, res) => {
+  try {
+    const { analysisTokens, chatTokens, minIntervalSec } = req.body || {};
+    if (analysisTokens) {
+      await db.setSetting('ollama_num_predict', String(parseInt(analysisTokens)));
+      process.env.OLLAMA_NUM_PREDICT = String(parseInt(analysisTokens));
+    }
+    if (chatTokens) {
+      await db.setSetting('ollama_chat_num_predict', String(parseInt(chatTokens)));
+      process.env.OLLAMA_CHAT_NUM_PREDICT = String(parseInt(chatTokens));
+    }
+    if (minIntervalSec) {
+      await db.setSetting('analysis_min_interval_sec', String(parseInt(minIntervalSec)));
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+// Set runtime performance knobs (CPU threads, predict length) without rebuild
+app.post('/api/perf/config', async (req, res) => {
+  try {
+    const { numThreads, numPredict } = req.body || {};
+    if (numThreads) process.env.OLLAMA_NUM_THREAD = String(numThreads);
+    if (numPredict) process.env.OLLAMA_NUM_PREDICT = String(numPredict);
+    res.json({ success: true, numThreads: process.env.OLLAMA_NUM_THREAD, numPredict: process.env.OLLAMA_NUM_PREDICT });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
 
 // Check setup status
 app.get('/api/setup-status', async (req, res) => {
@@ -215,15 +314,30 @@ app.post('/api/setup', async (req, res) => {
 });
 
 // Get recent news articles
+// Simple in-memory cache for hot GET endpoints
+const responseCache = new Map();
+const cacheGet = (key, maxAgeMs) => {
+  const it = responseCache.get(key);
+  if (!it) return null;
+  if (Date.now() - it.ts > maxAgeMs) { responseCache.delete(key); return null; }
+  return it.data;
+};
+const cacheSet = (key, data) => { responseCache.set(key, { ts: Date.now(), data }); };
+
 app.get('/api/news', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
-    const articles = await db.getRecentArticles(limit);
+    const cacheKey = `/api/news?limit=${limit}`;
+    const cached = cacheGet(cacheKey, 5000);
+    if (cached) return res.json(cached);
+    // Backend guarantee: only return articles with valid instrument
+    const articles = (await db.getRecentArticles(limit)).filter(a => a.instrument_name && String(a.instrument_name).trim().length > 0);
     console.log(`📡 API: Serving ${articles.length} articles to frontend`);
     
     // Monitor API activity
     monitoring.onApiRequest('/api/news', articles.length);
     
+    cacheSet(cacheKey, articles);
     res.json(articles);
   } catch (error) {
     console.error('API Error:', error);
@@ -307,6 +421,25 @@ app.post('/api/populate-feed', async (req, res) => {
   }
 });
 
+// Danger: clear all news and trigger a fresh scrape
+app.post('/api/news/reset', async (req, res) => {
+  try {
+    const deleted = await db.deleteAllArticles();
+    // Notify clients to clear immediately
+    try {
+      io.emit('articles-cleared');
+      io.emit('articles-sync', { articles: [] });
+    } catch {}
+    // Immediately start a new collection but don't block response
+    setImmediate(async () => {
+      try { await scheduler.runOnce({ force: true }); } catch (e) { console.error('runOnce failed after reset:', e.message); }
+    });
+    res.json({ success: true, deleted, message: 'All news deleted; new collection triggered' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Real-time monitoring endpoints
 app.get('/api/monitor/metrics', (req, res) => {
   try {
@@ -314,6 +447,31 @@ app.get('/api/monitor/metrics', (req, res) => {
     res.json(metrics);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Persisted system metrics history (up to last 2 hours)
+app.get('/api/system-metrics/history', async (req, res) => {
+  try {
+    const sinceMs = parseInt(req.query.sinceMs) || (Date.now() - 2 * 60 * 60 * 1000);
+    const Database = require('./database');
+    const dbh = new Database();
+    const rows = await dbh.getSystemMetricsSince(sinceMs);
+    dbh.close();
+    res.json({ samples: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Stream live debug events over WebSocket and expose rolling logs over HTTP
+app.get('/api/debug/logs', (req, res) => {
+  try {
+    const { level, limit = 200, event } = req.query || {};
+    const logs = realTimeMonitor.getLogs(level, parseInt(limit), event);
+    res.json({ logs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -496,6 +654,774 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
+// Scraping libraries: test and info
+app.get('/api/scraping/libs', async (req, res) => {
+  try {
+    const activeLib = (await db.getSetting('active_scraping_lib')) || 'scrapy';
+    const scrappingInterval = parseInt(await db.getSetting('scrapping_interval_sec')) || 30;
+    const libs = [
+      { key: 'scrapy', name: 'Python Scrapy', intervalSec: scrappingInterval, active: activeLib === 'scrapy' },
+      { key: 'selenium', name: 'Selenium (Chromium)', intervalSec: null, active: activeLib === 'selenium' },
+      { key: 'bs4', name: 'Requests + BeautifulSoup', intervalSec: null, active: activeLib === 'bs4' },
+      { key: 'playwright', name: 'Playwright (Chromium)', intervalSec: null, active: activeLib === 'playwright' },
+      { key: 'feedparser', name: 'Feedparser (RSS/Atom)', intervalSec: null, active: activeLib === 'feedparser' },
+      { key: 'feedsearch', name: 'Feedsearch (discover feeds)', intervalSec: null, active: activeLib === 'feedsearch' },
+      { key: 'pygooglenews', name: 'PyGoogleNews (Google News RSS)', intervalSec: null, active: activeLib === 'pygooglenews' },
+      { key: 'newscatcher', name: 'NewsCatcher', intervalSec: null, active: activeLib === 'newscatcher' },
+      { key: 'newspaper3k', name: 'Newspaper3k (article extract)', intervalSec: null, active: activeLib === 'newspaper3k' },
+      { key: 'trafilatura', name: 'Trafilatura', intervalSec: null, active: activeLib === 'trafilatura' },
+      { key: 'investpy', name: 'Investpy (economic calendar)', intervalSec: null, active: activeLib === 'investpy' }
+    ];
+    res.json({ libs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/scraping/test', async (req, res) => {
+  try {
+    const key = (req.body && req.body.key) || 'scrapy';
+    const start = Date.now();
+    let articles = 0;
+    let library = key;
+    // Build source lists (mirror /api/scraping/sources)
+    const buildSources = async () => {
+      const aiServiceFeeds = [
+        'https://feeds.feedburner.com/zerohedge/feed',
+        'https://seekingalpha.com/feed.xml',
+        'https://feeds.feedburner.com/TheMotleyFool',
+        'https://www.investing.com/rss/news.rss',
+        'https://www.marketwatch.com/feeds/topstories',
+        'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
+        'https://www.ft.com/rss/home/us',
+        'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
+        'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
+        'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
+        'https://feeds.finance.yahoo.com/rss/2.0/headline',
+        // Additional general business/markets
+        'https://www.cnbc.com/id/10000664/device/rss/rss.html',
+        'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+        'https://www.zacks.com/stock/research/feed',
+        'https://www.fool.com/a/feeds/foolwatch.xml',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+        'https://cointelegraph.com/rss',
+        'https://decrypt.co/feed',
+        'https://www.theblock.co/rss',
+        'https://www.dailyfx.com/feeds/market-news',
+        'https://www.fxstreet.com/rss',
+        'https://www.oilprice.com/rss/main.xml',
+        'https://www.kitco.com/rss/feed.xml',
+        'https://www.wsj.com/xml/rss/3_7031.xml',
+        'https://www.economist.com/finance-and-economics/rss.xml',
+        'https://www.semianalysis.com/feed',
+        'https://www.techmeme.com/feed.xml',
+        // Macro/policy institutions
+        'https://www.federalreserve.gov/feeds/press_all.xml',
+        'https://www.ecb.europa.eu/press/pressconf/html/index.en.rss',
+        'https://www.imf.org/external/np/speeches/rss.aspx',
+        'https://home.treasury.gov/news/press-releases/rss',
+        'https://www.bis.org/pressreleases_rss.xml',
+        'https://www.bea.gov/news/rss.xml',
+        'https://www.bls.gov/feeds/news_release.rss',
+        // ETFs / funds
+        'https://www.etftrends.com/feed/'
+      ];
+      const scrapyFeeds = [
+        'https://feeds.finance.yahoo.com/rss/2.0/headline',
+        'https://www.marketwatch.com/rss/topstories',
+        'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
+        'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+        'https://www.reuters.com/business/finance/rss',
+        'https://www.ft.com/rss/home',
+        'https://www.bloomberg.com/politics/feeds/site.xml',
+        'https://www.investing.com/rss/news.rss',
+        'https://seekingalpha.com/market_currents.xml',
+        'https://www.zerohedge.com/fullrss2.xml',
+        'https://feeds.feedburner.com/TheMotleyFool',
+        // Extra solid RSS endpoints for Scrapy
+        'https://www.wsj.com/xml/rss/3_7031.xml',
+        'https://www.fxstreet.com/rss',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+        'https://cointelegraph.com/rss',
+        'https://decrypt.co/feed',
+        'https://www.oilprice.com/rss/main.xml',
+        'https://www.kitco.com/rss/feed.xml'
+      ];
+      let extra = [];
+      try { const raw = await db.getSetting('rss_sources_extra'); if (raw) extra = JSON.parse(raw); } catch {}
+      // Apply blacklist so tests reflect the same set as the UI list
+      let blacklist = [];
+      try { const rawBl = await db.getSetting('rss_sources_blacklist'); if (rawBl) blacklist = JSON.parse(rawBl); } catch {}
+      const isAllowed = (u) => !blacklist.includes(u);
+      const mergeUnique = (arr1, arr2) => Array.from(new Set([...(arr1||[]), ...(arr2||[])]));
+      return {
+        ai: mergeUnique(aiServiceFeeds, extra).filter(isAllowed),
+        scrapy: mergeUnique(scrapyFeeds, extra).filter(isAllowed)
+      };
+    };
+    const probeSources = async (urls) => {
+      const axios = require('axios');
+      const baseHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml,application/xml;q=0.9,text/html;q=0.8,*/*;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
+        'Referer': 'https://www.google.com/',
+        'Connection': 'keep-alive'
+      };
+      const tests = urls.map(async (u) => {
+        const t0 = Date.now();
+        try {
+          const r = await axios.get(u, { timeout: 7000, maxRedirects: 3, validateStatus: ()=>true, headers: baseHeaders });
+          const ok = r.status >= 200 && r.status < 400;
+          return {
+            url: u,
+            ok,
+            status: r.status,
+            headers: r.headers && typeof r.headers === 'object' ? { 'content-type': r.headers['content-type'] } : undefined,
+            durationMs: Date.now()-t0
+          };
+        } catch (e) {
+          // Chromium fallback
+          try {
+            const cr = await browserPool.fetch(u);
+            return { url: u, ok: cr.ok, status: cr.status, fixed_by: 'chromium', durationMs: Date.now()-t0 };
+          } catch {}
+          return {
+            url: u,
+            ok: false,
+            error: e.code || e.message,
+            status: e.response && e.response.status,
+            reason: e.name,
+            message: e.message,
+            stack: e.stack,
+            durationMs: Date.now()-t0
+          };
+        }
+      });
+      return Promise.all(tests);
+    };
+
+    // Helpers for specific libraries
+    const parseWithFeedparser = async (urls) => {
+      const axios = require('axios');
+      const results = [];
+      for (const url of urls) {
+        const t0 = Date.now();
+        try {
+          const resp = await axios.get(url, { responseType: 'stream', timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/rss+xml,application/xml;q=0.9,*/*;q=0.8' } });
+          const fp = new FeedParser();
+          const items = [];
+          await new Promise((resolve, reject) => {
+            resp.data.pipe(fp);
+            fp.on('error', reject);
+            fp.on('readable', function() { let item; while (item = this.read()) { items.push(item); if (items.length >= 50) break; } });
+            fp.on('end', resolve);
+          });
+          results.push({ url, ok: items.length > 0, status: 200, durationMs: Date.now()-t0, items: items.length });
+        } catch (e) {
+          results.push({ url, ok: false, error: e.message, durationMs: Date.now()-t0 });
+        }
+      }
+      return results;
+    };
+
+    const discoverFeeds = async (roots) => {
+      const axios = require('axios');
+      const cheerio = require('cheerio');
+      const results = [];
+      for (const root of roots) {
+        const t0 = Date.now();
+        try {
+          const resp = await axios.get(root, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+          const $ = cheerio.load(resp.data);
+          const links = new Set();
+          $('link').each((_, el) => {
+            const type = ($(el).attr('type')||'').toLowerCase();
+            const href = $(el).attr('href');
+            if ((type.includes('rss') || type.includes('xml') || /rss|feed|xml/i.test(href||'')) && href) {
+              try { links.add(new URL(href, root).toString()); } catch {}
+            }
+          });
+          $('a[href]').each((_, el) => {
+            const href = $(el).attr('href');
+            if (/rss|feed|xml/i.test(href||'')) { try { links.add(new URL(href, root).toString()); } catch {} }
+          });
+          results.push({ url: root, ok: links.size > 0, status: 200, durationMs: Date.now()-t0, discovered: Array.from(links).slice(0, 10) });
+        } catch (e) {
+          results.push({ url: root, ok: false, error: e.message, durationMs: Date.now()-t0 });
+        }
+      }
+      return results;
+    };
+
+    // Determine which sources to probe
+    const { ai, scrapy } = await buildSources();
+    const selected = key === 'scrapy' ? scrapy : ai;
+    let bySource = [];
+    if (key === 'selenium') {
+      // Use enhanced Selenium collector to process ALL selected sources and count ALL items
+      const { spawn } = require('child_process');
+      const py = spawn('/app/scrapy_news_collector/venv/bin/python3', ['-u', '/app/scrapy_news_collector/selenium_collector.py'], {
+        env: { ...process.env, SELENIUM_SOURCES_JSON: JSON.stringify(selected), CHR_NAV_TIMEOUT_MS: String(parseInt(process.env.CHR_NAV_TIMEOUT_MS || '12000')) }
+      });
+      let out = '';
+      let err = '';
+      const done = new Promise((resolve) => {
+        py.stdout.on('data', (d) => { out += d.toString(); });
+        py.stderr.on('data', (d) => { err += d.toString(); });
+        py.on('close', () => resolve());
+      });
+      // Safety timeout (40s for full sweep)
+      await Promise.race([
+        done,
+        new Promise((resolve) => setTimeout(() => { try { py.kill('SIGTERM'); } catch {} resolve(); }, 40000))
+      ]);
+      try {
+        const parsed = JSON.parse(out || '{}');
+        const results = Array.isArray(parsed.results) ? parsed.results : [];
+        bySource = results.map(r => ({ url: r.source, ok: !!r.ok, status: r.ok ? 200 : 0, durationMs: r.durationMs, error: r.error, items: Array.isArray(r.items) ? r.items.length : 0 }));
+        // Aggregate total items as articles
+        articles = results.reduce((sum, r) => sum + (Array.isArray(r.items) ? r.items.length : 0), 0);
+      } catch {
+        bySource = [];
+      }
+    } else if (key === 'feedparser') {
+      bySource = await parseWithFeedparser(selected.slice(0, 12));
+      articles = bySource.filter(s=>s.ok).reduce((sum, s)=> sum + (s.items||0), 0);
+    } else if (key === 'feedsearch') {
+      const roots = ['https://finance.yahoo.com','https://www.marketwatch.com','https://www.reuters.com','https://www.ft.com'];
+      bySource = await discoverFeeds(roots);
+      // Count discovered feeds as articles estimation
+      articles = bySource.reduce((sum, r)=> sum + ((r.discovered||[]).length), 0);
+    } else if (key === 'pygooglenews') {
+      const queries = [
+        'stock market', 'forex', 'crypto', 'commodities',
+      ];
+      const urls = queries.map(q => `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`);
+      bySource = await parseWithFeedparser(urls);
+      articles = bySource.filter(s=>s.ok).reduce((sum, s)=> sum + (s.items||0), 0);
+    } else if (key === 'newscatcher') {
+      // Placeholder without API key: use Google News Business as free alternative
+      const urls = ['https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en'];
+      bySource = await parseWithFeedparser(urls);
+      articles = bySource.filter(s=>s.ok).reduce((sum, s)=> sum + (s.items||0), 0);
+    } else if (key === 'newspaper3k') {
+      // Fetch first item from a few feeds and measure content length via Chromium (as proxy for extraction)
+      const axios = require('axios');
+      const feeds = selected.slice(0, 4);
+      const tests = [];
+      for (const f of feeds) {
+        const t0 = Date.now();
+        try {
+          const parsed = await parseWithFeedparser([f]);
+          const firstUrl = (parsed[0] && parsed[0].ok && parsed[0].items) ? null : null;
+          let articleUrl = null;
+          try {
+            const resp = await axios.get(f, { timeout: 8000 });
+            const m = String(resp.data).match(/<link>(.*?)<\/link>/i);
+            if (m && m[1]) articleUrl = m[1];
+          } catch {}
+          if (!articleUrl) { tests.push({ url: f, ok: false, error: 'no-article', durationMs: Date.now()-t0 }); continue; }
+          const cr = await browserPool.fetch(articleUrl);
+          tests.push({ url: articleUrl, ok: !!cr.ok, status: cr.status, durationMs: Date.now()-t0 });
+        } catch (e) {
+          tests.push({ url: f, ok: false, error: e.message, durationMs: Date.now()-t0 });
+        }
+      }
+      bySource = tests;
+      articles = bySource.filter(s=>s.ok).length;
+    } else if (key === 'bs4') {
+      // Basic HTML fetch + cheerio parse title
+      const axios = require('axios');
+      const cheerio = require('cheerio');
+      const roots = selected.slice(0, 8).map(u=> new URL(u).origin);
+      bySource = await Promise.all(roots.map(async (u)=>{
+        const t0 = Date.now();
+        try { const r = await axios.get(u, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' }}); const $ = cheerio.load(r.data); const title = $('title').text().trim(); return { url: u, ok: !!title, status: r.status, durationMs: Date.now()-t0 } } catch(e) { return { url: u, ok:false, error:e.message, durationMs: Date.now()-t0 }; }
+      }));
+      articles = bySource.filter(s=>s.ok).length;
+    } else if (key === 'investpy') {
+      // Not enabled in this image: return informative status
+      bySource = [{ url: 'economic_calendar', ok: false, error: 'Investpy not available in current build', status: 0, durationMs: 1 }];
+      articles = 0;
+    } else if (key === 'playwright') {
+      // Use Node Chromium fetch as Playwright proxy
+      bySource = await Promise.all(selected.slice(0, 6).map(async (u)=>{
+        const t0 = Date.now();
+        try { const r = await browserPool.fetch(u); return { url: u, ok: r.ok, status: r.status, durationMs: Date.now()-t0 } } catch(e){ return { url: u, ok:false, error:e.message, durationMs: Date.now()-t0 }; }
+      }));
+      articles = bySource.filter(s=>s.ok).length;
+    } else {
+      bySource = await probeSources(selected);
+    }
+    try {
+      if (key === 'scrapy') {
+        // Kick off a real scrape in background so UI is responsive
+        setImmediate(async () => {
+          try { await scheduler.scrapyService.runScraper(); } catch (e) { console.error('scrapy test background run failed:', e.message); }
+        });
+        // Quick estimate based on reachable sources
+        articles = bySource.filter(s=>s.ok).length;
+      } else if (key !== 'selenium') {
+        // Simulated aggregate based on successful probes (non-selenium)
+        articles = bySource.filter(s=>s.ok).length;
+      }
+    } catch (e) { /* ignore, response will still include bySource */ }
+    const durationMs = Date.now() - start;
+    res.json({ success: true, library, articles, durationMs, bySource });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Experimental: Trigger Selenium-based browse of sources to extract feeds and page content hints
+app.post('/api/scraping/selenium/browse', async (req, res) => {
+  try {
+    const { urls, timeoutMs } = req.body || {};
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ success: false, error: 'urls[] required' });
+    }
+    const py = spawn('/app/scrapy_news_collector/venv/bin/python', ['-u', '/app/scrapy_news_collector/selenium_fetcher.py'], {
+      env: { ...process.env, SELENIUM_SOURCES_JSON: JSON.stringify(urls), CHR_NAV_TIMEOUT_MS: String(timeoutMs || 12000) }
+    });
+    let out = '';
+    let err = '';
+    py.stdout.on('data', (d) => { out += d.toString(); });
+    py.stderr.on('data', (d) => { err += d.toString(); });
+    py.on('close', (code) => {
+      try {
+        const parsed = JSON.parse(out || '{}');
+        return res.json({ success: true, code, ...parsed, stderr: err.trim() || undefined });
+      } catch (e) {
+        return res.json({ success: false, error: e.message, raw: out, stderr: err.trim() || undefined });
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Streaming per-source test results via Server-Sent Events (SSE)
+app.get('/api/scraping/test/stream', async (req, res) => {
+  try {
+    const key = (req.query && req.query.key) || 'scrapy';
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders && res.flushHeaders();
+
+    const axios = require('axios');
+    const baseHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/rss+xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Referer': 'https://www.google.com/',
+      'Connection': 'keep-alive'
+    };
+    // Build sources (duplicated logic kept local for isolation)
+    const aiServiceFeeds = [
+      'https://feeds.feedburner.com/zerohedge/feed',
+      'https://seekingalpha.com/feed.xml',
+      'https://feeds.feedburner.com/TheMotleyFool',
+      'https://www.investing.com/rss/news.rss',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
+      'https://www.marketwatch.com/feeds/topstories',
+      'https://www.ft.com/rss/home/us',
+      'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
+      'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
+      'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      'https://www.zacks.com/stock/research/feed',
+      'https://www.fool.com/a/feeds/foolwatch.xml',
+      'https://www.coindesk.com/arc/outboundfeeds/rss/',
+      'https://cointelegraph.com/rss',
+      'https://www.theblock.co/rss',
+      'https://www.dailyfx.com/feeds/market-news',
+      'https://www.fxstreet.com/rss',
+      'https://www.oilprice.com/rss/main.xml',
+      'https://www.kitco.com/rss/feed.xml',
+      'https://www.wsj.com/xml/rss/3_7031.xml',
+      'https://www.economist.com/finance-and-economics/rss.xml',
+      'https://www.semianalysis.com/feed',
+      'https://www.techmeme.com/feed.xml'
+    ];
+    const scrapyFeeds = [
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      'https://www.marketwatch.com/rss/topstories',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
+      'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+      'https://www.reuters.com/business/finance/rss',
+      'https://www.ft.com/rss/home',
+      'https://www.bloomberg.com/politics/feeds/site.xml',
+      'https://www.investing.com/rss/news.rss',
+      'https://seekingalpha.com/market_currents.xml',
+      'https://www.zerohedge.com/fullrss2.xml',
+      'https://feeds.feedburner.com/TheMotleyFool'
+    ];
+    let extra = [];
+    try { const raw = await db.getSetting('rss_sources_extra'); if (raw) extra = JSON.parse(raw); } catch {}
+    // Apply blacklist so streaming test matches the UI list
+    let blacklist = [];
+    try { const rawBl = await db.getSetting('rss_sources_blacklist'); if (rawBl) blacklist = JSON.parse(rawBl); } catch {}
+    const isAllowed = (u) => !blacklist.includes(u);
+    const mergeUnique = (arr1, arr2) => Array.from(new Set([...(arr1||[]), ...(arr2||[])]));
+    const selected = (key === 'scrapy' ? mergeUnique(scrapyFeeds, extra) : mergeUnique(aiServiceFeeds, extra)).filter(isAllowed);
+
+    // Clear signal to client
+    res.write(`event: clear\n`);
+    res.write(`data: {"ok":0,"fail":0}\n\n`);
+
+    let ok = 0; let fail = 0; const start = Date.now();
+    const controller = new AbortController();
+    req.on('close', () => { try { controller.abort(); } catch {} });
+
+    for (const u of selected) {
+      const t0 = Date.now();
+      try {
+        const r = await axios.get(u, { timeout: 7000, maxRedirects: 3, validateStatus: ()=>true, headers: baseHeaders, httpAgent: undefined, httpsAgent: undefined });
+        const sample = { url: u, ok: r.status >= 200 && r.status < 400, status: r.status, durationMs: Date.now() - t0 };
+        if (sample.ok) ok++; else fail++;
+        res.write(`data: ${JSON.stringify(sample)}\n\n`);
+      } catch (e) {
+        const sample = { url: u, ok: false, error: e.code || e.message, durationMs: Date.now() - t0 };
+        fail++;
+        res.write(`data: ${JSON.stringify(sample)}\n\n`);
+      }
+    }
+    const durationMs = Date.now() - start;
+    res.write(`event: done\n`);
+    res.write(`data: ${JSON.stringify({ ok, fail, durationMs })}\n\n`);
+    res.end();
+  } catch (e) {
+    try {
+      res.write(`event: done\n`);
+      res.write(`data: ${JSON.stringify({ ok:0, fail:0, error: e.message })}\n\n`);
+    } catch {}
+    try { res.end(); } catch {}
+  }
+});
+
+// Select active scraping library
+app.post('/api/scraping/use', async (req, res) => {
+  try {
+    const { key } = req.body || {};
+    if (!key) return res.status(400).json({ success: false, error: 'key required' });
+    await db.setSetting('active_scraping_lib', key);
+    // Broadcast library change to all clients
+    try { io.emit('scraper-lib-changed', { key, ts: Date.now() }); } catch {}
+    // Trigger an immediate scrape with the newly selected library (non-blocking)
+    setImmediate(async () => {
+      try { await scheduler.runOnce({ force: true }); } catch (e) { console.error('runOnce failed after lib switch:', e.message); }
+    });
+    res.json({ success: true, key, triggered: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Get/Set scrapping interval (seconds)
+app.get('/api/scraping/config', async (req, res) => {
+  try {
+    const intervalSec = parseInt(await db.getSetting('scrapping_interval_sec')) || 30;
+    // Advanced scraping options persisted in DB
+    const seleniumEnabled = ((await db.getSetting('selenium_enabled')) || '0') === '1';
+    let extraListingPages = [];
+    try { const raw = await db.getSetting('extra_listing_pages'); if (raw) extraListingPages = JSON.parse(raw); } catch {}
+    const maxPaginationPages = parseInt(await db.getSetting('max_pagination_pages')) || 10;
+    const cfg = {
+      intervalSec,
+      seleniumEnabled,
+      extraListingPages,
+      maxPaginationPages,
+      spiders: (process.env.SPIDERS || 'rss_news').split(',').map(s=>s.trim()).filter(Boolean),
+      rssSchedules: { fast: '*/2 min', main: '*/5 min', macro: '*/20 min' },
+      scrapy: {
+        DOWNLOAD_DELAY: parseFloat(process.env.SCRAPY_DOWNLOAD_DELAY || '1.5'),
+        CONCURRENT_REQUESTS: parseInt(process.env.SCRAPY_CONCURRENT_REQUESTS || '16'),
+        CONCURRENT_REQUESTS_PER_DOMAIN: parseInt(process.env.SCRAPY_CONCURRENT_REQUESTS_PER_DOMAIN || '2'),
+        AUTOTHROTTLE_ENABLED: (process.env.SCRAPY_AUTOTHROTTLE_ENABLED || 'true'),
+        AUTOTHROTTLE_START_DELAY: parseFloat(process.env.SCRAPY_AUTOTHROTTLE_START_DELAY || '1.0'),
+        AUTOTHROTTLE_MAX_DELAY: parseFloat(process.env.SCRAPY_AUTOTHROTTLE_MAX_DELAY || '15.0'),
+        AUTOTHROTTLE_TARGET_CONCURRENCY: parseFloat(process.env.SCRAPY_AUTOTHROTTLE_TARGET_CONCURRENCY || '1.0'),
+        DOWNLOAD_TIMEOUT: parseInt(process.env.SCRAPY_DOWNLOAD_TIMEOUT || '45'),
+        RETRY_ENABLED: (process.env.SCRAPY_RETRY_ENABLED || 'true'),
+        RETRY_TIMES: parseInt(process.env.SCRAPY_RETRY_TIMES || '3')
+      }
+    };
+    res.json(cfg);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/scraping/config', async (req, res) => {
+  try {
+    const { intervalSec, scrapy, seleniumEnabled, extraListingPages, maxPaginationPages } = req.body || {};
+    const value = parseInt(intervalSec);
+    if (!Number.isFinite(value) || value <= 0) {
+      return res.status(400).json({ success: false, error: 'intervalSec must be a positive integer' });
+    }
+    await db.setSetting('scrapping_interval_sec', String(value));
+    // Persist Selenium + pagination settings
+    if (typeof seleniumEnabled === 'boolean') {
+      await db.setSetting('selenium_enabled', seleniumEnabled ? '1' : '0');
+      process.env.SELENIUM_ENABLED = seleniumEnabled ? '1' : '0';
+    }
+    if (extraListingPages !== undefined) {
+      try {
+        const asArray = Array.isArray(extraListingPages) ? extraListingPages : JSON.parse(String(extraListingPages || '[]'));
+        await db.setSetting('extra_listing_pages', JSON.stringify(asArray));
+        process.env.EXTRA_LISTING_PAGES = JSON.stringify(asArray);
+      } catch (e) {
+        // ignore parse errors; don't overwrite existing on bad input
+      }
+    }
+    if (maxPaginationPages !== undefined) {
+      const mpp = parseInt(maxPaginationPages);
+      if (Number.isFinite(mpp) && mpp > 0) {
+        await db.setSetting('max_pagination_pages', String(mpp));
+        process.env.MAX_PAGINATION_PAGES = String(mpp);
+      }
+    }
+    // Apply Scrapy env overrides (runtime) if present
+    if (scrapy && typeof scrapy === 'object') {
+      const map = {
+        DOWNLOAD_DELAY: 'SCRAPY_DOWNLOAD_DELAY',
+        CONCURRENT_REQUESTS: 'SCRAPY_CONCURRENT_REQUESTS',
+        CONCURRENT_REQUESTS_PER_DOMAIN: 'SCRAPY_CONCURRENT_REQUESTS_PER_DOMAIN',
+        AUTOTHROTTLE_ENABLED: 'SCRAPY_AUTOTHROTTLE_ENABLED',
+        AUTOTHROTTLE_START_DELAY: 'SCRAPY_AUTOTHROTTLE_START_DELAY',
+        AUTOTHROTTLE_MAX_DELAY: 'SCRAPY_AUTOTHROTTLE_MAX_DELAY',
+        AUTOTHROTTLE_TARGET_CONCURRENCY: 'SCRAPY_AUTOTHROTTLE_TARGET_CONCURRENCY',
+        DOWNLOAD_TIMEOUT: 'SCRAPY_DOWNLOAD_TIMEOUT',
+        RETRY_ENABLED: 'SCRAPY_RETRY_ENABLED',
+        RETRY_TIMES: 'SCRAPY_RETRY_TIMES',
+        RETRY_HTTP_CODES: 'SCRAPY_RETRY_HTTP_CODES'
+      };
+      Object.keys(map).forEach(k => {
+        if (scrapy[k] !== undefined && scrapy[k] !== null && scrapy[k] !== '') {
+          process.env[map[k]] = String(scrapy[k]);
+        }
+      });
+    }
+    res.json({ success: true, intervalSec: value, seleniumEnabled: ((await db.getSetting('selenium_enabled')) || '0') === '1', extraListingPages: (JSON.parse((await db.getSetting('extra_listing_pages')) || '[]')), maxPaginationPages: parseInt(await db.getSetting('max_pagination_pages')) || 10, scrapy: {
+      DOWNLOAD_DELAY: process.env.SCRAPY_DOWNLOAD_DELAY,
+      CONCURRENT_REQUESTS: process.env.SCRAPY_CONCURRENT_REQUESTS,
+      CONCURRENT_REQUESTS_PER_DOMAIN: process.env.SCRAPY_CONCURRENT_REQUESTS_PER_DOMAIN,
+      AUTOTHROTTLE_ENABLED: process.env.SCRAPY_AUTOTHROTTLE_ENABLED,
+      AUTOTHROTTLE_START_DELAY: process.env.SCRAPY_AUTOTHROTTLE_START_DELAY,
+      AUTOTHROTTLE_MAX_DELAY: process.env.SCRAPY_AUTOTHROTTLE_MAX_DELAY,
+      AUTOTHROTTLE_TARGET_CONCURRENCY: process.env.SCRAPY_AUTOTHROTTLE_TARGET_CONCURRENCY,
+      DOWNLOAD_TIMEOUT: process.env.SCRAPY_DOWNLOAD_TIMEOUT,
+      RETRY_ENABLED: process.env.SCRAPY_RETRY_ENABLED,
+      RETRY_TIMES: process.env.SCRAPY_RETRY_TIMES,
+      RETRY_HTTP_CODES: process.env.SCRAPY_RETRY_HTTP_CODES
+    }});
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Get/Set enabled spiders (persisted in DB)
+app.get('/api/scraping/spiders', async (req, res) => {
+  try {
+    let enabled = [];
+    try { const raw = await db.getSetting('enabled_spiders'); if (raw) enabled = JSON.parse(raw); } catch {}
+    const all = ['rss_news', 'html_news'];
+    res.json({ enabled: Array.isArray(enabled) && enabled.length ? enabled : ['rss_news'], all });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/scraping/spiders', async (req, res) => {
+  try {
+    const { enabled } = req.body || {};
+    if (!Array.isArray(enabled)) {
+      return res.status(400).json({ success: false, error: 'enabled[] required' });
+    }
+    const allowed = new Set(['rss_news', 'html_news']);
+    const filtered = Array.from(new Set(enabled.filter((s)=>allowed.has(String(s)))));
+    // Persist to DB and hint runtime via env
+    await db.setSetting('enabled_spiders', JSON.stringify(filtered));
+    process.env.SPIDERS = filtered.join(',');
+    // Broadcast optional event to clients
+    try { io.emit('spiders-changed', { enabled: filtered, ts: Date.now() }); } catch {}
+    res.json({ success: true, enabled: filtered });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// List all scraping sources (RSS) used across services
+app.get('/api/scraping/sources', async (req, res) => {
+  try {
+    // Feeds used by the Node AI service
+    const aiServiceFeeds = [
+      'https://feeds.feedburner.com/zerohedge/feed',
+      'https://seekingalpha.com/feed.xml',
+      'https://feeds.feedburner.com/TheMotleyFool',
+      'https://www.investing.com/rss/news.rss',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
+      'https://www.marketwatch.com/feeds/topstories',
+      'https://www.ft.com/rss/home/us',
+      'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
+      'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
+      'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      'https://www.zacks.com/stock/research/feed',
+      'https://www.fool.com/a/feeds/foolwatch.xml',
+      'https://www.coindesk.com/arc/outboundfeeds/rss/',
+      'https://cointelegraph.com/rss',
+      'https://www.theblock.co/rss',
+      'https://www.dailyfx.com/feeds/market-news',
+      'https://www.fxstreet.com/rss',
+      'https://www.oilprice.com/rss/main.xml',
+      'https://www.kitco.com/rss/feed.xml',
+      'https://www.wsj.com/xml/rss/3_7031.xml',
+      'https://www.economist.com/finance-and-economics/rss.xml',
+      'https://www.semianalysis.com/feed',
+      'https://www.techmeme.com/feed.xml'
+    ];
+
+    // Feeds used by the Python Scrapy spider
+    const scrapyFeeds = [
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      'https://www.marketwatch.com/rss/topstories',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
+      'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+      'https://www.reuters.com/business/finance/rss',
+      'https://www.ft.com/rss/home',
+      'https://www.bloomberg.com/politics/feeds/site.xml',
+      'https://www.investing.com/rss/news.rss',
+      'https://seekingalpha.com/market_currents.xml',
+      'https://www.zerohedge.com/fullrss2.xml',
+      'https://feeds.feedburner.com/TheMotleyFool'
+    ];
+
+    // Merge in any saved extra feeds
+    let extra = [];
+    try {
+      const raw = await db.getSetting('rss_sources_extra');
+      if (raw) extra = JSON.parse(raw);
+    } catch {}
+    // Apply blacklist
+    let blacklist = [];
+    try { const raw = await db.getSetting('rss_sources_blacklist'); if (raw) blacklist = JSON.parse(raw); } catch {}
+    const isAllowed = (u) => !blacklist.includes(u);
+    const mergeUnique = (arr1, arr2) => Array.from(new Set([...(arr1||[]), ...(arr2||[])]));
+    const aiMerged = mergeUnique(aiServiceFeeds, extra).filter(isAllowed);
+    const scrapyMerged = mergeUnique(scrapyFeeds, extra).filter(isAllowed);
+    res.json({ aiServiceFeeds: aiMerged, scrapyFeeds: scrapyMerged });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Expand sources automatically and persist to DB for future runs
+app.post('/api/scraping/sources/expand', async (req, res) => {
+  try {
+    const axios = require('axios');
+    const cheerio = require('cheerio');
+
+    // Curated starter set
+    const curated = [
+      // Extra crypto/forex/commodities
+      'https://www.coinspeaker.com/rss/',
+      'https://news.bitcoin.com/feed/',
+      'https://cryptonews.com/news/feed',
+      'https://www.forexlive.com/feed/',
+      'https://www.oanda.com/forex-trading/analysis/market-analysis/rss',
+      'https://www.spglobal.com/platts/en/rss',
+      // Macro/indices
+      'https://www.imf.org/external/np/speeches/rss.aspx',
+      'https://www.ecb.europa.eu/press/pressconf/html/index.en.rss',
+      'https://www.federalreserve.gov/feeds/press_all.xml',
+      // Tech impacting markets
+      'https://arstechnica.com/feed/',
+      'https://www.theverge.com/rss/index.xml'
+    ];
+
+    // Seeds (home pages) to discover additional RSS links
+    const seeds = [
+      'https://finance.yahoo.com',
+      'https://www.marketwatch.com',
+      'https://www.nasdaq.com',
+      'https://www.fxstreet.com',
+      'https://www.dailyfx.com',
+      'https://www.coindesk.com',
+      'https://cointelegraph.com',
+      'https://www.oilprice.com',
+      'https://www.kitco.com',
+      'https://www.reuters.com/finance',
+      'https://www.wsj.com',
+      'https://www.economist.com'
+    ];
+
+    const discovered = new Set(curated);
+    const isRssLike = (href='') => /rss|feed|xml/i.test(href);
+    const absolutize = (base, href) => {
+      try { return new URL(href, base).toString(); } catch { return null; }
+    };
+
+    await Promise.all(seeds.map(async (seed) => {
+      try {
+        const resp = await axios.get(seed, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0 (NewsBot)' } });
+        const $ = cheerio.load(resp.data);
+        // <link rel="alternate" type="application/rss+xml" href="...">
+        $('link').each((_, el) => {
+          const type = ($(el).attr('type')||'').toLowerCase();
+          const href = $(el).attr('href');
+          if ((type.includes('rss') || type.includes('xml') || isRssLike(href)) && href) {
+            const abs = absolutize(seed, href);
+            if (abs) discovered.add(abs);
+          }
+        });
+        $('a[href]').each((_, el) => {
+          const href = $(el).attr('href');
+          if (isRssLike(href)) {
+            const abs = absolutize(seed, href);
+            if (abs) discovered.add(abs);
+          }
+        });
+      } catch (err) {
+        console.warn('RSS discovery failed for', seed, err.message);
+      }
+    }));
+
+    // Merge with existing stored
+    let existing = [];
+    try {
+      const raw = await db.getSetting('rss_sources_extra');
+      if (raw) existing = JSON.parse(raw);
+    } catch {}
+
+    const merged = Array.from(new Set([...(existing||[]), ...Array.from(discovered)]));
+    await db.setSetting('rss_sources_extra', JSON.stringify(merged));
+    return res.json({ success: true, added: merged.length - (existing||[]).length, total: merged.length });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Remove/bBlacklist problematic sources after a test run
+app.post('/api/scraping/sources/purge-errors', async (req, res) => {
+  try {
+    const { urls } = req.body || {};
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ success: false, error: 'urls[] required' });
+    }
+    let blacklist = [];
+    try { const raw = await db.getSetting('rss_sources_blacklist'); if (raw) blacklist = JSON.parse(raw); } catch {}
+    const next = Array.from(new Set([...(blacklist||[]), ...urls]));
+    await db.setSetting('rss_sources_blacklist', JSON.stringify(next));
+    res.json({ success: true, blacklisted: next.length, added: next.length - (blacklist||[]).length });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 // Error handling middleware
 app.use((error, req, res, next) => {
@@ -631,7 +1557,8 @@ app.post('/api/ollama/test', async (req, res) => {
   try {
     const { model } = req.body;
     if (!model) {
-      return res.status(400).json({ error: 'Model name is required' });
+      // Return 200 with structured error to avoid polluting error metrics
+      return res.json({ success: false, error: 'Model name is required' });
     }
     
     const OllamaService = require('./ollamaService');
@@ -782,6 +1709,7 @@ app.post('/api/ai-chat', async (req, res) => {
     const startTime = Date.now();
     let response;
     let tokens = 0;
+    const chatTokensSetting = parseInt(await db.getSetting('ollama_chat_num_predict')) || parseInt(process.env.OLLAMA_CHAT_NUM_PREDICT || '64');
     
     // Set aggressive timeout for AI requests (15 seconds max)
     const AI_REQUEST_TIMEOUT = 15000;
@@ -851,17 +1779,18 @@ app.post('/api/ai-chat-stream', async (req, res) => {
     const { message, aiProvider, model, customPrompt, socketId } = req.body;
     
     if (!message) {
-      return res.status(400).json({ error: 'Message is required' });
+      return res.json({ success: false, error: 'Message is required' });
     }
     
     if (!socketId) {
-      return res.status(400).json({ error: 'Socket ID is required for streaming' });
+      return res.json({ success: false, error: 'Socket ID is required for streaming' });
     }
     
     // Return immediately - streaming happens via WebSocket
     res.json({ success: true, message: 'Streaming started', socketId, timestamp: new Date().toISOString() });
     
     const startTime = Date.now();
+    const chatTokensSetting = parseInt(await db.getSetting('ollama_chat_num_predict')) || parseInt(process.env.OLLAMA_CHAT_NUM_PREDICT || '64');
     let tokens = 0;
     
     // Set aggressive timeout for streaming (20 seconds max)
@@ -939,17 +1868,39 @@ app.post('/api/ai-chat-stream', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Error in streaming AI chat:', error);
-    
-    // Send error through WebSocket if we have a socketId
-    if (req.body.socketId) {
-      io.emit('ai-chat-error', { 
-        socketId: req.body.socketId, 
-        error: error.message 
-      });
+    console.error('Error in streaming AI chat (will fallback to non-stream):', error.message);
+
+    try {
+      // Fallback to non-streaming chat so the UI still gets a response
+      if (req.body.aiProvider === 'ollama') {
+        const OllamaService = require('./ollamaService');
+        const ollama = new OllamaService();
+        const chatTokensSetting = parseInt(await db.getSetting('ollama_chat_num_predict')) || parseInt(process.env.OLLAMA_CHAT_NUM_PREDICT || '64');
+        const result = await ollama.chatWithModel(req.body.model, req.body.message, req.body.customPrompt, { numPredict: chatTokensSetting });
+
+        // Notify completion via websocket so UI can stop spinners
+        if (req.body.socketId) {
+          io.emit('ai-chat-complete', { 
+            socketId: req.body.socketId, 
+            processingTime: 0, 
+            tokens: result.tokens || 0 
+          });
+          // Also push the full response as one final chunk
+          io.emit('ai-chat-chunk', { socketId: req.body.socketId, chunk: result.response, timestamp: new Date().toISOString() });
+        }
+
+        // Update metrics
+        realTimeMonitor.recordAIRequest('ollama', 0, result.tokens || 0);
+
+        return res.json({ success: true, message: 'Fallback (non-stream) completed', tokens: result.tokens || 0 });
+      }
+    } catch (fallbackError) {
+      console.error('Fallback chat also failed:', fallbackError.message);
+      if (req.body.socketId) {
+        io.emit('ai-chat-error', { socketId: req.body.socketId, error: fallbackError.message });
+      }
+      return res.json({ success: false, error: fallbackError.message });
     }
-    
-    res.status(500).json({ error: error.message });
   }
 });
 

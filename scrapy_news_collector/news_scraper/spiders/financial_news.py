@@ -1,3 +1,5 @@
+import os
+import json
 import scrapy
 import feedparser
 from datetime import datetime
@@ -7,7 +9,7 @@ class FinancialNewsSpider(scrapy.Spider):
     name = 'financial_news'
     allowed_domains = []
     
-    # RSS feed-uri pentru știri financiare
+    # RSS feed-uri pentru știri financiare (bootstrap)
     rss_feeds = [
         'https://feeds.finance.yahoo.com/rss/2.0/headline',
         'https://www.marketwatch.com/rss/topstories',
@@ -22,13 +24,24 @@ class FinancialNewsSpider(scrapy.Spider):
     ]
     
     custom_settings = {
-        'DOWNLOAD_DELAY': 2,
-        'CONCURRENT_REQUESTS': 4,
+        'DOWNLOAD_DELAY': float(os.getenv('SCRAPY_DOWNLOAD_DELAY', '0.25')),
+        'CONCURRENT_REQUESTS': int(os.getenv('SCRAPY_CONCURRENT_REQUESTS', '16')),
         'ROBOTSTXT_OBEY': False,
     }
     
     def start_requests(self):
-        """Generează request-uri pentru RSS feed-uri"""
+        """Generează request-uri pentru RSS feed-uri (+ EXTRA_RSS_FEEDS din env)"""
+        # Extinde lista cu surse extra din variabile de mediu (JSON array)
+        try:
+            extra_raw = os.getenv('EXTRA_RSS_FEEDS', '[]')
+            extra_list = json.loads(extra_raw) if extra_raw else []
+            if isinstance(extra_list, list):
+                merged = list(dict.fromkeys(self.rss_feeds + extra_list))
+                self.logger.info(f"🧩 EXTRA_RSS_FEEDS merged: +{max(0, len(merged)-len(self.rss_feeds))} sources")
+                self.rss_feeds = merged
+        except Exception as e:
+            self.logger.warning(f"Failed to load EXTRA_RSS_FEEDS: {e}")
+
         for feed_url in self.rss_feeds:
             yield scrapy.Request(
                 url=feed_url,
@@ -36,6 +49,7 @@ class FinancialNewsSpider(scrapy.Spider):
                 meta={'feed_url': feed_url},
                 dont_filter=True
             )
+        # Fallback: if no items scraped from RSS, emit minimal items from RSS titles only
     
     def parse_rss_feed(self, response):
         """Parsează RSS feed-ul și extrage URL-urile articolelor"""

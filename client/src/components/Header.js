@@ -24,11 +24,6 @@ const Header = ({ stats }) => {
                   <span className="text-lg font-bold text-gray-900">{stats.totalArticles}</span>
                   <span className="text-xs text-gray-500 uppercase tracking-wide">News</span>
                 </div>
-                <div className="w-px h-8 bg-gray-300"></div>
-                <div className="flex flex-col items-center">
-                  <span className="text-lg font-bold text-gray-900">{stats.averageConfidence}%</span>
-                  <span className="text-xs text-gray-500 uppercase tracking-wide">Confidence</span>
-                </div>
               </div>
             )}
             
