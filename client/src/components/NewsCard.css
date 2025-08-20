@@ -64,6 +64,27 @@
   font-weight: 400;
 }
 
+.instrument-name .instrument-link {
+  color: #2563eb;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  margin-right: 6px;
+}
+
+.instrument-name .instrument-link:hover {
+  text-decoration-style: solid;
+}
+
+.instrument-name .instrument-link-icon {
+  display: inline-flex;
+  align-items: center;
+  color: #6b7280;
+}
+
+.instrument-name .instrument-link-icon:hover {
+  color: #111827;
+}
+
 .card-meta {
   display: flex;
   align-items: center;

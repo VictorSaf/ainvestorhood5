@@ -19,7 +19,7 @@ RUN npm run build
 # Server stage
 FROM node:20-alpine AS server-build
 
-# Install Python și dependințe pentru Scrapy + Chromium pentru Puppeteer + SQLite pentru better-sqlite3
+# Install Python și dependințe pentru Scrapy + Chromium pentru Puppeteer + SQLite pentru better-sqlite3 (Alpine)
 RUN apk add --no-cache \
     python3 \
     py3-pip \
@@ -33,17 +33,10 @@ RUN apk add --no-cache \
     libxml2-dev \
     libxslt-dev \
     sqlite-dev \
-    chromium \
-    nss \
-    freetype \
-    freetype-dev \
-    harfbuzz \
     ca-certificates \
-    ttf-freefont
+    curl
 
-# Set environment variables pentru Puppeteer să nu descarce Chrome
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+# No Puppeteer system browser baked in (lean image)
 
 # Set working directory pentru server
 WORKDIR /app/server
@@ -66,11 +59,12 @@ WORKDIR /app/scrapy_news_collector
 # Copy Scrapy requirements
 COPY scrapy_news_collector/requirements.txt ./
 
-# Create Python virtual environment și install dependencies
+# Create Python virtual environment și install dependencies folosind pip din venv
 RUN python3 -m venv venv && \
-    source venv/bin/activate && \
-    pip install --upgrade pip && \
-    pip install -r requirements.txt
+    venv/bin/pip install --upgrade pip && \
+    venv/bin/pip install -r requirements.txt
+
+# (No Playwright install on Alpine to keep image lean and compatible)
 
 # Copy Scrapy source code
 COPY scrapy_news_collector/ ./
@@ -78,7 +72,7 @@ COPY scrapy_news_collector/ ./
 # Final production stage
 FROM node:20-alpine
 
-# Install Python și runtime dependencies
+# Install Python și runtime dependencies (Alpine)
 RUN apk add --no-cache \
     python3 \
     py3-pip \
@@ -86,6 +80,7 @@ RUN apk add --no-cache \
     curl
 
 # Create app user
+# Create app user (Alpine)
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nextjs -u 1001
 
@@ -108,6 +103,9 @@ RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
 ENV NODE_ENV=production
 ENV PORT=8080
 ENV DB_PATH=/app/data/ainvestorhood.db
+ENV ALLOW_UNVERIFIED_INSTRUMENTS=1
+ENV SCRAPY_DOWNLOAD_TIMEOUT=45
+ENV SCRAPY_RETRY_TIMES=3
 
 # Expose port
 EXPOSE 8080

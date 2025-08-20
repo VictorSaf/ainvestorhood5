@@ -66,6 +66,15 @@ const LiveFeed = ({ initialNews = [], hasApiKey, onRefresh, onMonitoring, onAIDa
       // Don't auto-scroll - let user stay where they are
     });
 
+    // Handle clear event
+    newSocket.on('articles-cleared', () => {
+      setArticles([]);
+      setStats({ processed: 0, duplicates: 0, errors: 0 });
+      if (feedRef.current) {
+        feedRef.current.scrollTo({ top: 0, behavior: 'instant' });
+      }
+    });
+
     // Handle article updates
     newSocket.on('article-updated', (data) => {
       console.log('🔄 Article updated:', data.article.title.substring(0, 50));
@@ -97,7 +106,29 @@ const LiveFeed = ({ initialNews = [], hasApiKey, onRefresh, onMonitoring, onAIDa
       setArticles(data.articles);
     });
 
+    // React to scraper library changes
+    newSocket.on('scraper-lib-changed', async (data) => {
+      try {
+        const resp = await axios.get('http://localhost:8080/api/scraping/libs');
+        const libs = resp.data?.libs || [];
+        const active = libs.find(l => l.active);
+        setScraperLib(active?.name || active?.key || 'Unknown');
+      } catch {}
+    });
+
     setSocket(newSocket);
+
+    // Fetch current scraping library
+    (async () => {
+      try {
+        const resp = await axios.get('http://localhost:8080/api/scraping/libs');
+        const libs = resp.data?.libs || [];
+        const active = libs.find(l => l.active);
+        setScraperLib(active?.name || active?.key || 'Unknown');
+      } catch (e) {
+        setScraperLib('Unknown');
+      }
+    })();
 
     return () => {
       if (newSocket) {

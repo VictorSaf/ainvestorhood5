@@ -1,13 +1,18 @@
+const Database = require('./database');
+
 class LiveStreamService {
   constructor() {
     this.io = null;
     this.connectedClients = new Set();
     this.recentArticles = [];
     this.maxRecentArticles = 50;
+    this.db = null;
+    this.currentRun = { processed: 0, duplicates: 0, errors: 0, started: false };
   }
 
   init(io) {
     this.io = io;
+    try { this.db = new Database(); } catch {}
     console.log('📡 Live stream service initialized');
 
     // Încarcă articolele la inițializare - FORȚAT
@@ -101,11 +106,25 @@ class LiveStreamService {
   // Broadcast news collection progress
   broadcastCollectionProgress(progress) {
     if (!this.io) return;
-
-    this.io.emit('collection-progress', {
-      ...progress,
+    // Maintain rolling counters for realtime UI
+    if (progress.started) {
+      this.currentRun = { processed: 0, duplicates: 0, errors: 0, started: true };
+    }
+    if (typeof progress.processed === 'number') this.currentRun.processed = progress.processed;
+    if (typeof progress.duplicates === 'number') this.currentRun.duplicates = progress.duplicates;
+    if (typeof progress.errors === 'number') this.currentRun.errors = progress.errors;
+    const payload = {
+      processed: this.currentRun.processed,
+      duplicates: this.currentRun.duplicates,
+      errors: this.currentRun.errors,
+      started: this.currentRun.started,
+      completed: !!progress.completed,
       timestamp: new Date().toISOString()
-    });
+    };
+    if (payload.completed) {
+      this.currentRun.started = false;
+    }
+    this.io.emit('collection-progress', payload);
   }
 
   // Get current statistics

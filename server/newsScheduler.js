@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const Database = require('./database');
+const os = require('os');
 const AIService = require('./aiService');
 const ScrapyService = require('./scrapyService');
 const UnifiedScrapingService = require('./unifiedScrapingService');
@@ -111,6 +112,7 @@ class NewsScheduler {
 
       console.log('Starting news collection...');
       await this.collectAndAnalyzeNews();
+      this.lastRunAt = Date.now();
     });
 
     // Clean old articles every hour
@@ -137,6 +139,8 @@ class NewsScheduler {
     console.log('🚀 Starting RSS-based news collection...');
     monitoring.onNewsCollectionStart();
     liveStream.broadcastProcessingStatus(true);
+    // Reset realtime counters for UI new/filtered
+    liveStream.broadcastCollectionProgress({ started: true, processed: 0, duplicates: 0, errors: 0 });
 
     try {
       // Folosește direct metoda RSS legacy (Scrapy are probleme)
@@ -192,16 +196,38 @@ class NewsScheduler {
 
           // Check if this is a duplicate
           const isDuplicate = await this.db.isDuplicate(contentHash);
-          if (isDuplicate) {
+          if (isDuplicate || isLikelyDuplicate(newsItem.title)) {
             duplicateCount++;
             continue;
           }
 
           // Analyze the article with AI
           const startTime = Date.now();
-          const analysis = await this.aiService.analyzeNewsArticle(newsItem.title, content, newsItem.url);
-          if (!analysis) {
-            console.log(`Skipping article: ${newsItem.title} - analysis failed`);
+          let analysis = await this.aiService.analyzeNewsArticle(newsItem.title, content, newsItem.url);
+          // Skip HOLD as requested
+          if (String(analysis?.recommendation || '').toUpperCase() === 'HOLD') {
+            console.log(`Skipping HOLD recommendation: ${newsItem.title.substring(0,60)}...`);
+            continue;
+          }
+          if (!analysis || !analysis.instrument_name || !analysis.instrument_type) {
+            const h = extractHeuristic(newsItem.title, content);
+            if (!h) {
+              console.log(`Skipping article: ${newsItem.title} - analysis failed`);
+              errorCount++;
+              continue;
+            }
+            analysis = {
+              summary: content.slice(0, 500),
+              instrument_type: h.type,
+              instrument_name: h.name,
+              recommendation: 'HOLD',
+              confidence_score: 50
+            };
+          }
+
+          // Enforce tradable instrument requirement (must have identifiable, non-empty name)
+          if (!this.isTradableInstrument(analysis.instrument_type, analysis.instrument_name, newsItem.title)) {
+            console.log(`Skipping article: ${newsItem.title} - no tradable instrument identified`);
             errorCount++;
             continue;
           }
@@ -223,7 +249,15 @@ class NewsScheduler {
             continue;
           }
 
-          // Save to database
+          // Try to resolve Yahoo symbol to improve link accuracy; if unresolved, keep original instrument (do not drop)
+          try {
+            const resolvedSymbol = await resolveYahooSymbol(analysis.instrument_type, analysis.instrument_name, newsItem.title);
+            if (resolvedSymbol) {
+              analysis.instrument_name = resolvedSymbol;
+            }
+          } catch {}
+
+          // Save to database (DB layer also enforces instrument_name presence)
           const article = {
             title: newsItem.title,
             summary: analysis.summary,
@@ -233,21 +267,25 @@ class NewsScheduler {
             confidence_score: analysis.confidence_score,
             source_url: newsItem.url,
             content_hash: contentHash,
-            published_at: newsItem.pubDate || new Date().toISOString()
+            // Prefer published_at from feed; fallback to current UTC ISO
+            published_at: (newsItem.pubDate && new Date(newsItem.pubDate).toISOString()) || new Date().toISOString()
           };
 
           try {
             const articleId = await this.db.addArticle(article);
-            article.id = articleId;
+            // Retrieve the freshly inserted row to include accurate created_at from DB
+            const articleFromDb = await this.db.getArticleById(articleId);
+            // Track fingerprint to avoid dupes within the same batch
+            newlyAddedFingerprints.add(this.normalizeTitle(articleFromDb.title));
             processedCount++;
-            console.log(`✅ Added article: ${article.title.substring(0, 60)}...`);
+            console.log(`✅ Added article: ${articleFromDb.title.substring(0, 60)}...`);
             
             // Monitor successful article processing
             monitoring.onArticleProcessed('added');
             monitoring.onDatabaseActivity('insert', { totalArticles: processedCount });
             
-            // Broadcast new article via live stream
-            liveStream.broadcastNewArticle(article);
+            // Broadcast new article via live stream, including created_at from DB
+            liveStream.broadcastNewArticle(articleFromDb);
             
           } catch (dbError) {
             if (dbError.message.includes('Duplicate article')) {
@@ -273,12 +311,15 @@ class NewsScheduler {
       
       // Broadcast collection completion
       liveStream.broadcastProcessingStatus(false);
-      liveStream.broadcastCollectionProgress({
-        processed: processedCount,
-        duplicates: duplicateCount,
-        errors: errorCount,
-        completed: true
-      });
+      liveStream.broadcastCollectionProgress({ processed: processedCount, duplicates: duplicateCount, errors: errorCount, completed: true });
+
+      // Sync latest articles to all clients
+      try {
+        const articles = await this.db.getRecentArticles(50);
+        liveStream.syncArticles(articles);
+      } catch (e) {
+        console.warn('Failed to sync articles after legacy run:', e.message);
+      }
 
       // Sync all articles from database to WebSocket clients
       await liveStream.syncArticles();
@@ -303,13 +344,9 @@ class NewsScheduler {
     }
   }
 
-  async runOnce() {
-    if (!this.aiService) {
-      throw new Error('AI service not initialized. Please set API key first.');
-    }
-    
+  async runOnce({ force = false } = {}) {
     console.log('Running news collection once...');
-    await this.collectAndAnalyzeNews();
+    await this.collectAndAnalyzeNews({ force });
   }
 
   stop() {

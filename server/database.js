@@ -133,6 +133,22 @@ class DatabaseWrapper {
     });
   }
 
+  getArticleById(id) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) {
+          const row = this.mem.news[id - 1] || null;
+          return resolve(row);
+        }
+        const stmt = this.db.prepare('SELECT * FROM news_articles WHERE id = ?');
+        const row = stmt.get(id);
+        resolve(row || null);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
   getRecentArticles(limit = 50) {
     return new Promise((resolve, reject) => {
       this.db.all(`SELECT * FROM news_articles 
@@ -266,8 +282,205 @@ class DatabaseWrapper {
     });
   }
 
+  // -------- System metrics (persisted) --------
+  insertSystemMetric(sample) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve(0);
+        const { ts, cpu_pct, mem_pct, gpu_pct, gpu_mem_pct } = sample;
+        const stmt = this.db.prepare(`INSERT OR REPLACE INTO system_metrics(ts, cpu_pct, mem_pct, gpu_pct, gpu_mem_pct)
+          VALUES(?, ?, ?, ?, ?)`);
+        const res = stmt.run(ts, cpu_pct|0, mem_pct|0, gpu_pct|0, gpu_mem_pct|0);
+        resolve(res.changes);
+      } catch (err) {
+        if (String(err.message||'').includes('database or disk is full') || err.code === 'SQLITE_FULL' || err.code === 'SQLITE_IOERR') {
+          this.enableMemoryMode(err.code || 'disk_full');
+          return resolve(0);
+        }
+        reject(err);
+      }
+    });
+  }
+
+  getSystemMetricsSince(sinceEpochMs) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve([]);
+        const stmt = this.db.prepare(`SELECT ts, cpu_pct, mem_pct, gpu_pct, gpu_mem_pct
+          FROM system_metrics WHERE ts >= ? ORDER BY ts ASC`);
+        const rows = stmt.all(sinceEpochMs);
+        resolve(rows);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  pruneOldSystemMetrics(olderThanEpochMs) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve(0);
+        const stmt = this.db.prepare(`DELETE FROM system_metrics WHERE ts < ?`);
+        const res = stmt.run(olderThanEpochMs);
+        resolve(res.changes);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  insertWebsocketMetric(sample) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve(0);
+        const { ts, active, total, msg_sent, msg_recv, errors } = sample;
+        const stmt = this.db.prepare(`INSERT OR REPLACE INTO websocket_metrics(ts, active, total, msg_sent, msg_recv, errors)
+          VALUES(?, ?, ?, ?, ?, ?)`);
+        const res = stmt.run(ts, active|0, total|0, msg_sent|0, msg_recv|0, errors|0);
+        resolve(res.changes);
+      } catch (err) {
+        if (String(err.message||'').includes('database or disk is full') || err.code === 'SQLITE_FULL' || err.code === 'SQLITE_IOERR') {
+          this.enableMemoryMode(err.code || 'disk_full');
+          return resolve(0);
+        }
+        reject(err);
+      }
+    });
+  }
+
+  getWebsocketMetricsSince(sinceEpochMs) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve([]);
+        const stmt = this.db.prepare(`SELECT ts, active, total, msg_sent, msg_recv, errors
+          FROM websocket_metrics WHERE ts >= ? ORDER BY ts ASC`);
+        const rows = stmt.all(sinceEpochMs);
+        resolve(rows);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  pruneOldWebsocketMetrics(olderThanEpochMs) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve(0);
+        const stmt = this.db.prepare(`DELETE FROM websocket_metrics WHERE ts < ?`);
+        const res = stmt.run(olderThanEpochMs);
+        resolve(res.changes);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  insertHttpMetric(sample) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve(0);
+        const { ts, active, total, errors, avg_rt } = sample;
+        const stmt = this.db.prepare(`INSERT OR REPLACE INTO http_metrics(ts, active, total, errors, avg_rt) VALUES(?,?,?,?,?)`);
+        resolve(stmt.run(ts, active|0, total|0, errors|0, avg_rt|0).changes);
+      } catch (e) {
+        if (String(e.message||'').includes('database or disk is full') || e.code === 'SQLITE_FULL' || e.code === 'SQLITE_IOERR') {
+          this.enableMemoryMode(e.code || 'disk_full');
+          return resolve(0);
+        }
+        reject(e);
+      }
+    });
+  }
+  getHttpMetricsSince(since) {
+    return new Promise((resolve, reject) => {
+      try { if (this.memoryMode) return resolve([]); resolve(this.db.prepare(`SELECT ts, active, total, errors, avg_rt FROM http_metrics WHERE ts>=? ORDER BY ts ASC`).all(since)); } catch (e) { reject(e); }
+    });
+  }
+  pruneOldHttpMetrics(olderThan) {
+    return new Promise((resolve, reject) => {
+      try { if (this.memoryMode) return resolve(0); resolve(this.db.prepare(`DELETE FROM http_metrics WHERE ts < ?`).run(olderThan).changes); } catch (e) { reject(e); }
+    });
+  }
+
+  insertDbMetric(sample) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve(0);
+        const { ts, active, total, errors, avg_ms } = sample;
+        const stmt = this.db.prepare(`INSERT OR REPLACE INTO db_metrics(ts, active, total, errors, avg_ms) VALUES(?,?,?,?,?)`);
+        resolve(stmt.run(ts, active|0, total|0, errors|0, avg_ms|0).changes);
+      } catch (e) { if (String(e.message||'').includes('database or disk is full') || e.code === 'SQLITE_FULL' || e.code === 'SQLITE_IOERR') { this.enableMemoryMode(e.code||'disk_full'); return resolve(0); } reject(e); }
+    });
+  }
+  getDbMetricsSince(since) {
+    return new Promise((resolve, reject) => {
+      try { if (this.memoryMode) return resolve([]); resolve(this.db.prepare(`SELECT ts, active, total, errors, avg_ms FROM db_metrics WHERE ts>=? ORDER BY ts ASC`).all(since)); } catch (e) { reject(e); }
+    });
+  }
+  pruneOldDbMetrics(olderThan) {
+    return new Promise((resolve, reject) => {
+      try { if (this.memoryMode) return resolve(0); resolve(this.db.prepare(`DELETE FROM db_metrics WHERE ts < ?`).run(olderThan).changes); } catch (e) { reject(e); }
+    });
+  }
+
+  insertAiMetric(sample) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve(0);
+        const { ts, avg_ms, total, errors } = sample;
+        const stmt = this.db.prepare(`INSERT OR REPLACE INTO ai_metrics(ts, avg_ms, total, errors) VALUES(?,?,?,?)`);
+        resolve(stmt.run(ts, avg_ms|0, total|0, errors|0).changes);
+      } catch (e) { if (String(e.message||'').includes('database or disk is full') || e.code === 'SQLITE_FULL' || e.code === 'SQLITE_IOERR') { this.enableMemoryMode(e.code||'disk_full'); return resolve(0); } reject(e); }
+    });
+  }
+  getAiMetricsSince(since) {
+    return new Promise((resolve, reject) => {
+      try { if (this.memoryMode) return resolve([]); resolve(this.db.prepare(`SELECT ts, avg_ms, total, errors FROM ai_metrics WHERE ts>=? ORDER BY ts ASC`).all(since)); } catch (e) { reject(e); }
+    });
+  }
+  pruneOldAiMetrics(olderThan) {
+    return new Promise((resolve, reject) => {
+      try { if (this.memoryMode) return resolve(0); resolve(this.db.prepare(`DELETE FROM ai_metrics WHERE ts < ?`).run(olderThan).changes); } catch (e) { reject(e); }
+    });
+  }
+
+  insertScrapyMetric(sample) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) return resolve(0);
+        const { ts, last_articles, status, last_errors } = sample;
+        const stmt = this.db.prepare(`INSERT OR REPLACE INTO scrapy_metrics(ts, last_articles, status, last_errors) VALUES(?,?,?,?)`);
+        resolve(stmt.run(ts, last_articles|0, String(status||'idle'), last_errors|0).changes);
+      } catch (e) { if (String(e.message||'').includes('database or disk is full') || e.code === 'SQLITE_FULL' || e.code === 'SQLITE_IOERR') { this.enableMemoryMode(e.code||'disk_full'); return resolve(0); } reject(e); }
+    });
+  }
+  getScrapyMetricsSince(since) {
+    return new Promise((resolve, reject) => {
+      try { if (this.memoryMode) return resolve([]); resolve(this.db.prepare(`SELECT ts, last_articles, status, last_errors FROM scrapy_metrics WHERE ts>=? ORDER BY ts ASC`).all(since)); } catch (e) { reject(e); }
+    });
+  }
+  pruneOldScrapyMetrics(olderThan) {
+    return new Promise((resolve, reject) => {
+      try { if (this.memoryMode) return resolve(0); resolve(this.db.prepare(`DELETE FROM scrapy_metrics WHERE ts < ?`).run(olderThan).changes); } catch (e) { reject(e); }
+    });
+  }
+
+  // Delete all news articles
+  deleteAllArticles() {
+    return new Promise((resolve, reject) => {
+      try {
+        if (this.memoryMode) { const n = this.mem.news.length; this.mem.news = []; return resolve(n); }
+        const stmt = this.db.prepare(`DELETE FROM news_articles`);
+        const result = stmt.run();
+        resolve(result.changes);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
   close() {
-    this.db.close();
+    try { if (this.db) this.db.close(); } catch {}
   }
 }
 

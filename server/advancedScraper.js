@@ -1,4 +1,3 @@
-const puppeteer = require('puppeteer');
 const UserAgent = require('user-agents');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -26,100 +25,7 @@ class AdvancedScraper {
     return this.requestDelays[Math.floor(Math.random() * this.requestDelays.length)];
   }
 
-  async initBrowser() {
-    if (this.browser) return this.browser;
-
-    this.browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor'
-      ]
-    });
-
-    return this.browser;
-  }
-
-  async scrapeWithPuppeteer(url, selectors = []) {
-    try {
-      const browser = await this.initBrowser();
-      const page = await browser.newPage();
-
-      // Set random user agent
-      await page.setUserAgent(this.getRandomUserAgent());
-
-      // Set viewport to mimic real browser
-      await page.setViewport({
-        width: 1366 + Math.floor(Math.random() * 200),
-        height: 768 + Math.floor(Math.random() * 200)
-      });
-
-      // Block images and CSS to speed up loading
-      await page.setRequestInterception(true);
-      page.on('request', (req) => {
-        const resourceType = req.resourceType();
-        if (resourceType === 'image' || resourceType === 'stylesheet' || resourceType === 'font') {
-          req.abort();
-        } else {
-          req.continue();
-        }
-      });
-
-      // Navigate with timeout
-      await page.goto(url, { 
-        waitUntil: 'domcontentloaded',
-        timeout: 30000 
-      });
-
-      // Wait for content to load
-      await page.waitForTimeout(Math.random() * 2000 + 1000);
-
-      // Try to find article content using multiple selectors
-      let content = '';
-      const contentSelectors = selectors.length > 0 ? selectors : [
-        'article',
-        '[data-module="ArticleBody"]',
-        '.story-body',
-        '.article-content',
-        '.post-content',
-        '.entry-content',
-        '.content-body',
-        'main p',
-        '.story p',
-        'p'
-      ];
-
-      for (const selector of contentSelectors) {
-        try {
-          const elements = await page.$$(selector);
-          if (elements.length > 0) {
-            content = await page.evaluate((sel) => {
-              const elements = document.querySelectorAll(sel);
-              return Array.from(elements).map(el => el.textContent).join(' ');
-            }, selector);
-
-            if (content.length > 200) break;
-          }
-        } catch (e) {
-          // Continue to next selector
-        }
-      }
-
-      await page.close();
-      return this.cleanContent(content);
-
-    } catch (error) {
-      console.error(`Puppeteer scraping error for ${url}:`, error.message);
-      return null;
-    }
-  }
+  // Puppeteer removed: keep Axios/Cheerio only for a lean environment
 
   async scrapeWithAxios(url) {
     try {
@@ -190,15 +96,8 @@ class AdvancedScraper {
 
       let content;
       
-      // Try Puppeteer for JavaScript-heavy sites
-      if (usePuppeteer || this.shouldUsePuppeteer(url)) {
-        content = await this.scrapeWithPuppeteer(url);
-      }
-      
-      // Fallback to Axios if Puppeteer fails or not needed
-      if (!content) {
-        content = await this.scrapeWithAxios(url);
-      }
+      // Axios/Cheerio scraping only
+      content = await this.scrapeWithAxios(url);
 
       if (!content || content.length < 50) {
         throw new Error('Content too short or empty');
@@ -212,17 +111,8 @@ class AdvancedScraper {
     }
   }
 
-  shouldUsePuppeteer(url) {
-    // Use Puppeteer for sites that heavily rely on JavaScript
-    const jsHeavySites = [
-      'bloomberg.com',
-      'marketwatch.com',
-      'nasdaq.com',
-      'cnbc.com'
-    ];
-    
-    return jsHeavySites.some(site => url.includes(site));
-  }
+  // No-op: Puppeteer removed
+  shouldUsePuppeteer() { return false; }
 
   cleanContent(content) {
     if (!content) return '';

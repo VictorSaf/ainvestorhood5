@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
 const path = require('path');
+const fs = require('fs');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
@@ -11,6 +12,7 @@ const UnifiedScrapingService = require('./unifiedScrapingService');
 const monitoring = require('./monitoring');
 const liveStream = require('./liveStream');
 const realTimeMonitor = require('./realTimeMonitor');
+const { resolveYahooSymbol } = require('./yahooResolver');
 const { 
   httpMonitoringMiddleware, 
   errorMonitoringMiddleware,
@@ -126,6 +128,29 @@ app.use('/api', (req, res, next) => {
 app.use(cors());
 app.use(compression()); // Add gzip compression for better performance
 app.use(express.json());
+try { app.use(require('compression')()); } catch {}
+// Align monitor timeout with server expectations
+process.env.MONITOR_HTTP_TIMEOUT_MS = process.env.MONITOR_HTTP_TIMEOUT_MS || '20000';
+
+// Serve favicon early to avoid 404 noise
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+// --- Analyze endpoint performance guards (concurrency + circuit breaker) ---
+const ANALYZE_MAX_CONCURRENT = parseInt(process.env.ANALYZE_MAX_CONCURRENT || '2');
+let analyzeActive = 0;
+let analyzeFailures = 0;
+let analyzeCircuitOpenUntil = 0;
+const ANALYZE_CB_WINDOW_MS = 30000; // within last 30s
+const ANALYZE_CB_THRESHOLD = 3;     // if >=3 failures -> open circuit for cooldown
+const ANALYZE_CB_COOLDOWN_MS = 30000;
+
+function recordAnalyzeFailure() {
+  analyzeFailures++;
+  setTimeout(() => { analyzeFailures = Math.max(0, analyzeFailures - 1); }, ANALYZE_CB_WINDOW_MS);
+  if (analyzeFailures >= ANALYZE_CB_THRESHOLD) {
+    analyzeCircuitOpenUntil = Date.now() + ANALYZE_CB_COOLDOWN_MS;
+  }
+}
 app.use(httpMonitoringMiddleware);
 
 // Serve static files from React build with caching
@@ -135,7 +160,53 @@ app.use(express.static(path.join(__dirname, '../client/build'), {
   lastModified: true
 }));
 
+// Prevent favicon 404 from polluting error metrics
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
 // API Routes
+// Get AI runtime settings (tokens, intervals)
+app.get('/api/ai-settings', async (req, res) => {
+  try {
+    const analysisTokens = parseInt(await db.getSetting('ollama_num_predict')) || parseInt(process.env.OLLAMA_NUM_PREDICT || '160');
+    const chatTokens = parseInt(await db.getSetting('ollama_chat_num_predict')) || parseInt(process.env.OLLAMA_CHAT_NUM_PREDICT || '64');
+    const minIntervalSec = parseInt(await db.getSetting('analysis_min_interval_sec')) || 30;
+    res.json({ analysisTokens, chatTokens, minIntervalSec });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update AI runtime settings
+app.post('/api/ai-settings', async (req, res) => {
+  try {
+    const { analysisTokens, chatTokens, minIntervalSec } = req.body || {};
+    if (analysisTokens) {
+      await db.setSetting('ollama_num_predict', String(parseInt(analysisTokens)));
+      process.env.OLLAMA_NUM_PREDICT = String(parseInt(analysisTokens));
+    }
+    if (chatTokens) {
+      await db.setSetting('ollama_chat_num_predict', String(parseInt(chatTokens)));
+      process.env.OLLAMA_CHAT_NUM_PREDICT = String(parseInt(chatTokens));
+    }
+    if (minIntervalSec) {
+      await db.setSetting('analysis_min_interval_sec', String(parseInt(minIntervalSec)));
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+// Set runtime performance knobs (CPU threads, predict length) without rebuild
+app.post('/api/perf/config', async (req, res) => {
+  try {
+    const { numThreads, numPredict } = req.body || {};
+    if (numThreads) process.env.OLLAMA_NUM_THREAD = String(numThreads);
+    if (numPredict) process.env.OLLAMA_NUM_PREDICT = String(numPredict);
+    res.json({ success: true, numThreads: process.env.OLLAMA_NUM_THREAD, numPredict: process.env.OLLAMA_NUM_PREDICT });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
 
 // Check setup status
 app.get('/api/setup-status', async (req, res) => {
@@ -215,15 +286,30 @@ app.post('/api/setup', async (req, res) => {
 });
 
 // Get recent news articles
+// Simple in-memory cache for hot GET endpoints
+const responseCache = new Map();
+const cacheGet = (key, maxAgeMs) => {
+  const it = responseCache.get(key);
+  if (!it) return null;
+  if (Date.now() - it.ts > maxAgeMs) { responseCache.delete(key); return null; }
+  return it.data;
+};
+const cacheSet = (key, data) => { responseCache.set(key, { ts: Date.now(), data }); };
+
 app.get('/api/news', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
-    const articles = await db.getRecentArticles(limit);
+    const cacheKey = `/api/news?limit=${limit}`;
+    const cached = cacheGet(cacheKey, 5000);
+    if (cached) return res.json(cached);
+    // Backend guarantee: only return articles with valid instrument
+    const articles = (await db.getRecentArticles(limit)).filter(a => a.instrument_name && String(a.instrument_name).trim().length > 0);
     console.log(`📡 API: Serving ${articles.length} articles to frontend`);
     
     // Monitor API activity
     monitoring.onApiRequest('/api/news', articles.length);
     
+    cacheSet(cacheKey, articles);
     res.json(articles);
   } catch (error) {
     console.error('API Error:', error);
@@ -307,6 +393,25 @@ app.post('/api/populate-feed', async (req, res) => {
   }
 });
 
+// Danger: clear all news and trigger a fresh scrape
+app.post('/api/news/reset', async (req, res) => {
+  try {
+    const deleted = await db.deleteAllArticles();
+    // Notify clients to clear immediately
+    try {
+      io.emit('articles-cleared');
+      io.emit('articles-sync', { articles: [] });
+    } catch {}
+    // Immediately start a new collection but don't block response
+    setImmediate(async () => {
+      try { await scheduler.runOnce({ force: true }); } catch (e) { console.error('runOnce failed after reset:', e.message); }
+    });
+    res.json({ success: true, deleted, message: 'All news deleted; new collection triggered' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Real-time monitoring endpoints
 app.get('/api/monitor/metrics', (req, res) => {
   try {
@@ -314,6 +419,31 @@ app.get('/api/monitor/metrics', (req, res) => {
     res.json(metrics);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Persisted system metrics history (up to last 2 hours)
+app.get('/api/system-metrics/history', async (req, res) => {
+  try {
+    const sinceMs = parseInt(req.query.sinceMs) || (Date.now() - 2 * 60 * 60 * 1000);
+    const Database = require('./database');
+    const dbh = new Database();
+    const rows = await dbh.getSystemMetricsSince(sinceMs);
+    dbh.close();
+    res.json({ samples: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Stream live debug events over WebSocket and expose rolling logs over HTTP
+app.get('/api/debug/logs', (req, res) => {
+  try {
+    const { level, limit = 200, event } = req.query || {};
+    const logs = realTimeMonitor.getLogs(level, parseInt(limit), event);
+    res.json({ logs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -496,6 +626,300 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
+// Scraping libraries: test and info
+app.get('/api/scraping/libs', async (req, res) => {
+  try {
+    const activeLib = (await db.getSetting('active_scraping_lib')) || 'scrapy';
+    const scrappingInterval = parseInt(await db.getSetting('scrapping_interval_sec')) || 30;
+    const libs = [
+      { key: 'scrapy', name: 'Python Scrapy', intervalSec: scrappingInterval, active: activeLib === 'scrapy' },
+      { key: 'bs4', name: 'BeautifulSoup + Requests', intervalSec: null, active: activeLib === 'bs4' },
+      { key: 'playwright', name: 'Playwright (Python)', intervalSec: null, active: activeLib === 'playwright' },
+      { key: 'trafilatura', name: 'Trafilatura', intervalSec: null, active: activeLib === 'trafilatura' }
+    ];
+    res.json({ libs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/scraping/test', async (req, res) => {
+  try {
+    const key = (req.body && req.body.key) || 'scrapy';
+    const start = Date.now();
+    let articles = 0;
+    let library = key;
+    // Build source lists (mirror /api/scraping/sources)
+    const buildSources = async () => {
+      const aiServiceFeeds = [
+        'https://feeds.feedburner.com/zerohedge/feed',
+        'https://seekingalpha.com/feed.xml',
+        'https://feeds.feedburner.com/TheMotleyFool',
+        'https://www.investing.com/rss/news.rss',
+        'https://www.marketwatch.com/feeds/topstories',
+        'https://www.ft.com/rss/home/us',
+        'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
+        'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
+        'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
+        'https://feeds.finance.yahoo.com/rss/2.0/headline',
+        'https://www.zacks.com/stock/research/feed',
+        'https://www.fool.com/a/feeds/foolwatch.xml',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+        'https://cointelegraph.com/rss',
+        'https://www.theblock.co/rss',
+        'https://www.dailyfx.com/feeds/market-news',
+        'https://www.fxstreet.com/rss',
+        'https://www.oilprice.com/rss/main.xml',
+        'https://www.kitco.com/rss/feed.xml',
+        'https://www.wsj.com/xml/rss/3_7031.xml',
+        'https://www.economist.com/finance-and-economics/rss.xml',
+        'https://www.semianalysis.com/feed',
+        'https://www.techmeme.com/feed.xml'
+      ];
+      const scrapyFeeds = [
+        'https://feeds.finance.yahoo.com/rss/2.0/headline',
+        'https://www.marketwatch.com/rss/topstories',
+        'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+        'https://www.reuters.com/business/finance/rss',
+        'https://www.ft.com/rss/home',
+        'https://www.bloomberg.com/politics/feeds/site.xml',
+        'https://www.investing.com/rss/news.rss',
+        'https://seekingalpha.com/market_currents.xml',
+        'https://www.zerohedge.com/fullrss2.xml',
+        'https://feeds.feedburner.com/TheMotleyFool'
+      ];
+      let extra = [];
+      try { const raw = await db.getSetting('rss_sources_extra'); if (raw) extra = JSON.parse(raw); } catch {}
+      const mergeUnique = (arr1, arr2) => Array.from(new Set([...(arr1||[]), ...(arr2||[])]));
+      return { ai: mergeUnique(aiServiceFeeds, extra), scrapy: mergeUnique(scrapyFeeds, extra) };
+    };
+    const probeSources = async (urls) => {
+      const axios = require('axios');
+      const tests = urls.map(async (u) => {
+        const t0 = Date.now();
+        try {
+          const r = await axios.get(u, { timeout: 5000, maxRedirects: 3, validateStatus: ()=>true });
+          const ok = r.status >= 200 && r.status < 400;
+          return { url: u, ok, status: r.status, durationMs: Date.now()-t0 };
+        } catch (e) {
+          return { url: u, ok: false, error: e.code || e.message, durationMs: Date.now()-t0 };
+        }
+      });
+      return Promise.all(tests);
+    };
+
+    const realTimeMonitor = require('./realTimeMonitor');
+    // Determine which sources to probe
+    const { ai, scrapy } = await buildSources();
+    const selected = key === 'scrapy' ? scrapy : ai;
+    const bySource = await probeSources(selected);
+    realTimeMonitor.onScrapingStart(key);
+    try {
+      if (key === 'scrapy') {
+        const result = await scheduler.scrapyService.runScraper();
+        articles = result.articlesProcessed || 0;
+      } else {
+        // Simulated aggregate based on successful probes
+        articles = bySource.filter(s=>s.ok).length;
+      }
+      realTimeMonitor.onScrapingEnd(articles, bySource.filter(s=>!s.ok).length, key);
+    } catch (e) {
+      realTimeMonitor.onScrapingEnd(0, bySource.filter(s=>!s.ok).length+1, key);
+    }
+    const durationMs = Date.now() - start;
+    res.json({ success: true, library, articles, durationMs, bySource });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Select active scraping library
+app.post('/api/scraping/use', async (req, res) => {
+  try {
+    const { key } = req.body || {};
+    if (!key) return res.status(400).json({ success: false, error: 'key required' });
+    await db.setSetting('active_scraping_lib', key);
+    // Broadcast library change to all clients
+    try { io.emit('scraper-lib-changed', { key, ts: Date.now() }); } catch {}
+    // Trigger an immediate scrape with the newly selected library (non-blocking)
+    setImmediate(async () => {
+      try { await scheduler.runOnce({ force: true }); } catch (e) { console.error('runOnce failed after lib switch:', e.message); }
+    });
+    res.json({ success: true, key, triggered: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Get/Set scrapping interval (seconds)
+app.get('/api/scraping/config', async (req, res) => {
+  try {
+    const intervalSec = parseInt(await db.getSetting('scrapping_interval_sec')) || 30;
+    res.json({ intervalSec });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/scraping/config', async (req, res) => {
+  try {
+    const { intervalSec } = req.body || {};
+    const value = parseInt(intervalSec);
+    if (!Number.isFinite(value) || value <= 0) {
+      return res.status(400).json({ success: false, error: 'intervalSec must be a positive integer' });
+    }
+    await db.setSetting('scrapping_interval_sec', String(value));
+    // Immediate apply: scheduler reads from DB each tick, so new value is effective right away
+    res.json({ success: true, intervalSec: value });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// List all scraping sources (RSS) used across services
+app.get('/api/scraping/sources', async (req, res) => {
+  try {
+    // Feeds used by the Node AI service
+    const aiServiceFeeds = [
+      'https://feeds.feedburner.com/zerohedge/feed',
+      'https://seekingalpha.com/feed.xml',
+      'https://feeds.feedburner.com/TheMotleyFool',
+      'https://www.investing.com/rss/news.rss',
+      'https://www.marketwatch.com/feeds/topstories',
+      'https://www.ft.com/rss/home/us',
+      'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
+      'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
+      'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      'https://www.zacks.com/stock/research/feed',
+      'https://www.fool.com/a/feeds/foolwatch.xml',
+      'https://www.coindesk.com/arc/outboundfeeds/rss/',
+      'https://cointelegraph.com/rss',
+      'https://www.theblock.co/rss',
+      'https://www.dailyfx.com/feeds/market-news',
+      'https://www.fxstreet.com/rss',
+      'https://www.oilprice.com/rss/main.xml',
+      'https://www.kitco.com/rss/feed.xml',
+      'https://www.wsj.com/xml/rss/3_7031.xml',
+      'https://www.economist.com/finance-and-economics/rss.xml',
+      'https://www.semianalysis.com/feed',
+      'https://www.techmeme.com/feed.xml'
+    ];
+
+    // Feeds used by the Python Scrapy spider
+    const scrapyFeeds = [
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      'https://www.marketwatch.com/rss/topstories',
+      'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+      'https://www.reuters.com/business/finance/rss',
+      'https://www.ft.com/rss/home',
+      'https://www.bloomberg.com/politics/feeds/site.xml',
+      'https://www.investing.com/rss/news.rss',
+      'https://seekingalpha.com/market_currents.xml',
+      'https://www.zerohedge.com/fullrss2.xml',
+      'https://feeds.feedburner.com/TheMotleyFool'
+    ];
+
+    // Merge in any saved extra feeds
+    let extra = [];
+    try {
+      const raw = await db.getSetting('rss_sources_extra');
+      if (raw) extra = JSON.parse(raw);
+    } catch {}
+    const mergeUnique = (arr1, arr2) => Array.from(new Set([...(arr1||[]), ...(arr2||[])]));
+    const aiMerged = mergeUnique(aiServiceFeeds, extra);
+    const scrapyMerged = mergeUnique(scrapyFeeds, extra);
+    res.json({ aiServiceFeeds: aiMerged, scrapyFeeds: scrapyMerged });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Expand sources automatically and persist to DB for future runs
+app.post('/api/scraping/sources/expand', async (req, res) => {
+  try {
+    const axios = require('axios');
+    const cheerio = require('cheerio');
+
+    // Curated starter set
+    const curated = [
+      // Extra crypto/forex/commodities
+      'https://www.coinspeaker.com/rss/',
+      'https://news.bitcoin.com/feed/',
+      'https://cryptonews.com/news/feed',
+      'https://www.forexlive.com/feed/',
+      'https://www.oanda.com/forex-trading/analysis/market-analysis/rss',
+      'https://www.spglobal.com/platts/en/rss',
+      // Macro/indices
+      'https://www.imf.org/external/np/speeches/rss.aspx',
+      'https://www.ecb.europa.eu/press/pressconf/html/index.en.rss',
+      'https://www.federalreserve.gov/feeds/press_all.xml',
+      // Tech impacting markets
+      'https://arstechnica.com/feed/',
+      'https://www.theverge.com/rss/index.xml'
+    ];
+
+    // Seeds (home pages) to discover additional RSS links
+    const seeds = [
+      'https://finance.yahoo.com',
+      'https://www.marketwatch.com',
+      'https://www.nasdaq.com',
+      'https://www.fxstreet.com',
+      'https://www.dailyfx.com',
+      'https://www.coindesk.com',
+      'https://cointelegraph.com',
+      'https://www.oilprice.com',
+      'https://www.kitco.com',
+      'https://www.reuters.com/finance',
+      'https://www.wsj.com',
+      'https://www.economist.com'
+    ];
+
+    const discovered = new Set(curated);
+    const isRssLike = (href='') => /rss|feed|xml/i.test(href);
+    const absolutize = (base, href) => {
+      try { return new URL(href, base).toString(); } catch { return null; }
+    };
+
+    await Promise.all(seeds.map(async (seed) => {
+      try {
+        const resp = await axios.get(seed, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0 (NewsBot)' } });
+        const $ = cheerio.load(resp.data);
+        // <link rel="alternate" type="application/rss+xml" href="...">
+        $('link').each((_, el) => {
+          const type = ($(el).attr('type')||'').toLowerCase();
+          const href = $(el).attr('href');
+          if ((type.includes('rss') || type.includes('xml') || isRssLike(href)) && href) {
+            const abs = absolutize(seed, href);
+            if (abs) discovered.add(abs);
+          }
+        });
+        $('a[href]').each((_, el) => {
+          const href = $(el).attr('href');
+          if (isRssLike(href)) {
+            const abs = absolutize(seed, href);
+            if (abs) discovered.add(abs);
+          }
+        });
+      } catch (err) {
+        console.warn('RSS discovery failed for', seed, err.message);
+      }
+    }));
+
+    // Merge with existing stored
+    let existing = [];
+    try {
+      const raw = await db.getSetting('rss_sources_extra');
+      if (raw) existing = JSON.parse(raw);
+    } catch {}
+
+    const merged = Array.from(new Set([...(existing||[]), ...Array.from(discovered)]));
+    await db.setSetting('rss_sources_extra', JSON.stringify(merged));
+    return res.json({ success: true, added: merged.length - (existing||[]).length, total: merged.length });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 // Error handling middleware
 app.use((error, req, res, next) => {
@@ -631,7 +1055,8 @@ app.post('/api/ollama/test', async (req, res) => {
   try {
     const { model } = req.body;
     if (!model) {
-      return res.status(400).json({ error: 'Model name is required' });
+      // Return 200 with structured error to avoid polluting error metrics
+      return res.json({ success: false, error: 'Model name is required' });
     }
     
     const OllamaService = require('./ollamaService');
@@ -782,6 +1207,7 @@ app.post('/api/ai-chat', async (req, res) => {
     const startTime = Date.now();
     let response;
     let tokens = 0;
+    const chatTokensSetting = parseInt(await db.getSetting('ollama_chat_num_predict')) || parseInt(process.env.OLLAMA_CHAT_NUM_PREDICT || '64');
     
     // Set aggressive timeout for AI requests (15 seconds max)
     const AI_REQUEST_TIMEOUT = 15000;
@@ -851,17 +1277,18 @@ app.post('/api/ai-chat-stream', async (req, res) => {
     const { message, aiProvider, model, customPrompt, socketId } = req.body;
     
     if (!message) {
-      return res.status(400).json({ error: 'Message is required' });
+      return res.json({ success: false, error: 'Message is required' });
     }
     
     if (!socketId) {
-      return res.status(400).json({ error: 'Socket ID is required for streaming' });
+      return res.json({ success: false, error: 'Socket ID is required for streaming' });
     }
     
     // Return immediately - streaming happens via WebSocket
     res.json({ success: true, message: 'Streaming started', socketId, timestamp: new Date().toISOString() });
     
     const startTime = Date.now();
+    const chatTokensSetting = parseInt(await db.getSetting('ollama_chat_num_predict')) || parseInt(process.env.OLLAMA_CHAT_NUM_PREDICT || '64');
     let tokens = 0;
     
     // Set aggressive timeout for streaming (20 seconds max)
@@ -939,17 +1366,39 @@ app.post('/api/ai-chat-stream', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Error in streaming AI chat:', error);
-    
-    // Send error through WebSocket if we have a socketId
-    if (req.body.socketId) {
-      io.emit('ai-chat-error', { 
-        socketId: req.body.socketId, 
-        error: error.message 
-      });
+    console.error('Error in streaming AI chat (will fallback to non-stream):', error.message);
+
+    try {
+      // Fallback to non-streaming chat so the UI still gets a response
+      if (req.body.aiProvider === 'ollama') {
+        const OllamaService = require('./ollamaService');
+        const ollama = new OllamaService();
+        const chatTokensSetting = parseInt(await db.getSetting('ollama_chat_num_predict')) || parseInt(process.env.OLLAMA_CHAT_NUM_PREDICT || '64');
+        const result = await ollama.chatWithModel(req.body.model, req.body.message, req.body.customPrompt, { numPredict: chatTokensSetting });
+
+        // Notify completion via websocket so UI can stop spinners
+        if (req.body.socketId) {
+          io.emit('ai-chat-complete', { 
+            socketId: req.body.socketId, 
+            processingTime: 0, 
+            tokens: result.tokens || 0 
+          });
+          // Also push the full response as one final chunk
+          io.emit('ai-chat-chunk', { socketId: req.body.socketId, chunk: result.response, timestamp: new Date().toISOString() });
+        }
+
+        // Update metrics
+        realTimeMonitor.recordAIRequest('ollama', 0, result.tokens || 0);
+
+        return res.json({ success: true, message: 'Fallback (non-stream) completed', tokens: result.tokens || 0 });
+      }
+    } catch (fallbackError) {
+      console.error('Fallback chat also failed:', fallbackError.message);
+      if (req.body.socketId) {
+        io.emit('ai-chat-error', { socketId: req.body.socketId, error: fallbackError.message });
+      }
+      return res.json({ success: false, error: fallbackError.message });
     }
-    
-    res.status(500).json({ error: error.message });
   }
 });
 

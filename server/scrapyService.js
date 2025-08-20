@@ -1,6 +1,8 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const Database = require('./database');
 
 class ScrapyService {
   constructor() {
@@ -8,6 +10,7 @@ class ScrapyService {
     this.pythonPath = path.join(this.scraperPath, 'venv', 'bin', 'python3');
     this.scriptPath = path.join(this.scraperPath, 'run_scraper.py');
     this.isRunning = false;
+    this.db = new Database();
   }
 
   /**
@@ -86,72 +89,103 @@ class ScrapyService {
         SCRAPY_SETTINGS_MODULE: 'news_scraper.settings'
       };
 
-      // Rulează scriptul Python
-      const scraper = spawn(this.pythonPath, [this.scriptPath], {
-        cwd: this.scraperPath,
-        env: env,
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
+      // Injectează surse suplimentare din DB pentru spider (JSON array)
+      Promise.resolve(this.db.getSetting('rss_sources_extra'))
+        .then((extra) => {
+          try {
+            env.EXTRA_RSS_FEEDS = extra || '[]';
+          } catch (e) {
+            env.EXTRA_RSS_FEEDS = '[]';
+          }
+        })
+        .finally(() => {
+          // Tuning dinamic pentru performanță maximă
+          try {
+            const cores = Math.max(1, (os.cpus() || []).length);
+            const concurrentRequests = Math.min(cores * 6, 48);
+            const perDomain = Math.min(cores * 3, 18);
+            env.SCRAPY_CONCURRENT_REQUESTS = String(concurrentRequests);
+            env.SCRAPY_CONCURRENT_REQUESTS_PER_DOMAIN = String(perDomain);
+            env.SCRAPY_DOWNLOAD_DELAY = process.env.SCRAPY_DOWNLOAD_DELAY || '0.2';
+            env.SCRAPY_AUTOTHROTTLE_ENABLED = process.env.SCRAPY_AUTOTHROTTLE_ENABLED || 'true';
+            env.SCRAPY_DOWNLOAD_TIMEOUT = process.env.SCRAPY_DOWNLOAD_TIMEOUT || '45';
+            env.SCRAPY_DNS_TIMEOUT = process.env.SCRAPY_DNS_TIMEOUT || '10';
+            env.SCRAPY_RETRY_TIMES = process.env.SCRAPY_RETRY_TIMES || '3';
+            env.SCRAPY_LOG_LEVEL = 'INFO';
+            // Asigură URL-ul către platformă (serverul Node din același container)
+            if (!env.PLATFORM_API_URL) {
+              env.PLATFORM_API_URL = 'http://localhost:8080';
+            }
+          } catch {}
 
-      let output = '';
-      let errorOutput = '';
-
-      scraper.stdout.on('data', (data) => {
-        const message = data.toString();
-        output += message;
-        console.log(`🐍 Scrapy: ${message.trim()}`);
-      });
-
-      scraper.stderr.on('data', (data) => {
-        const message = data.toString();
-        errorOutput += message;
-        console.error(`🐍 Scrapy Error: ${message.trim()}`);
-      });
-
-      scraper.on('close', (code) => {
-        this.isRunning = false;
-        
-        if (code === 0) {
-          console.log('✅ Scrapy scraper completed successfully');
-          resolve({
-            success: true,
-            message: 'Scraping completed successfully',
-            output: output,
-            articlesProcessed: this.extractArticleCount(output)
+          // Rulează scriptul Python
+          const scraper = spawn(this.pythonPath, [this.scriptPath], {
+            cwd: this.scraperPath,
+            env: env,
+            stdio: ['pipe', 'pipe', 'pipe']
           });
-        } else {
-          console.error(`❌ Scrapy scraper failed with code ${code}`);
-          reject({
-            success: false,
-            message: `Scraper failed with code ${code}`,
-            error: errorOutput,
-            output: output
-          });
-        }
-      });
 
-      scraper.on('error', (error) => {
-        this.isRunning = false;
-        console.error('❌ Failed to start Scrapy scraper:', error);
-        reject({
-          success: false,
-          message: 'Failed to start scraper',
-          error: error.message
+          let output = '';
+          let errorOutput = '';
+
+          scraper.stdout.on('data', (data) => {
+            const message = data.toString();
+            output += message;
+            console.log(`🐍 Scrapy: ${message.trim()}`);
+          });
+
+          scraper.stderr.on('data', (data) => {
+            const message = data.toString();
+            errorOutput += message;
+            console.error(`🐍 Scrapy Error: ${message.trim()}`);
+          });
+
+          scraper.on('close', (code) => {
+            this.isRunning = false;
+            
+            if (code === 0) {
+              console.log('✅ Scrapy scraper completed successfully');
+              resolve({
+                success: true,
+                message: 'Scraping completed successfully',
+                output: output,
+                articlesProcessed: this.extractArticleCount(`${output}\n${errorOutput}`)
+              });
+            } else {
+              console.error(`❌ Scrapy scraper failed with code ${code}`);
+              reject({
+                success: false,
+                message: `Scraper failed with code ${code}`,
+                error: errorOutput,
+                output: output
+              });
+            }
+          });
+
+          scraper.on('error', (error) => {
+            this.isRunning = false;
+            console.error('❌ Failed to start Scrapy scraper:', error);
+            reject({
+              success: false,
+              message: 'Failed to start scraper',
+              error: error.message
+            });
+          });
+
+          // Timeout configurabil (default 8 minute)
+          const runTimeoutMs = parseInt(process.env.SCRAPY_RUN_TIMEOUT_MS || '480000');
+          setTimeout(() => {
+            if (this.isRunning) {
+              scraper.kill('SIGTERM');
+              this.isRunning = false;
+              reject({
+                success: false,
+                message: `Scraper timeout after ${runTimeoutMs} ms`,
+                output: output
+              });
+            }
+          }, runTimeoutMs);
         });
-      });
-
-      // Timeout după 5 minute
-      setTimeout(() => {
-        if (this.isRunning) {
-          scraper.kill('SIGTERM');
-          this.isRunning = false;
-          reject({
-            success: false,
-            message: 'Scraper timeout after 5 minutes',
-            output: output
-          });
-        }
-      }, 5 * 60 * 1000);
     });
   }
 

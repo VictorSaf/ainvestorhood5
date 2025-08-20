@@ -1,5 +1,7 @@
 const os = require('os');
 const fs = require('fs');
+const { exec } = require('child_process');
+const Database = require('./database');
 const EventEmitter = require('events');
 
 class RealTimeMonitor extends EventEmitter {
@@ -14,7 +16,8 @@ class RealTimeMonitor extends EventEmitter {
         cpu: { usage: 0, cores: os.cpus().length },
         memory: { used: 0, total: os.totalmem(), free: 0, percentage: 0 },
         uptime: 0,
-        loadAverage: []
+        loadAverage: [],
+        gpu: { available: false, usage: 0, memory: { used: 0, total: 0, percentage: 0 } }
       },
       app: {
         startTime: Date.now(),
@@ -54,12 +57,17 @@ class RealTimeMonitor extends EventEmitter {
         connections: { active: 0, pool: 0 },
         operations: { read: 0, write: 0, delete: 0 }
       },
-      scrapy: {
+      scraping: {
         status: 'idle',
+        library: 'scrapy',
         lastRun: null,
-        articlesProcessed: 0,
-        errors: 0,
-        avgProcessingTime: 0
+        lastRunArticles: 0,
+        lastRunErrors: 0,
+        lastProcessingTime: 0,
+        totalArticles: 0,
+        errorsTotal: 0,
+        avgProcessingTime: 0,
+        runCount: 0
       },
       ai: {
         requests: { total: 0, active: 0, errors: 0 },
@@ -76,6 +84,8 @@ class RealTimeMonitor extends EventEmitter {
     this.performanceHistory = {
       cpu: [],
       memory: [],
+      gpu: [],
+      gpuMemory: [],
       requests: [],
       responses: []
     };
@@ -92,11 +102,20 @@ class RealTimeMonitor extends EventEmitter {
     
     this.isRunning = true;
     console.log('🔍 Real-time monitoring started');
+    // Lazy-init DB for metrics persistence
+    try { this.db = new Database(); } catch (e) { console.warn('DB init for monitor failed:', e.message); }
     
-    // Colectează metrici sistem la fiecare secundă
+    // Colectează metrici sistem la ~10Hz pentru grafic fluent, emis tot la 1Hz
+    let lastEmit = 0;
     this.systemInterval = setInterval(() => {
+      const beforeEmit = Date.now();
       this.collectSystemMetrics();
-    }, 1000);
+      if (beforeEmit - lastEmit >= 1000) {
+        lastEmit = beforeEmit;
+        // Emit snapshot explicit în cazul în care sampleGpu este întârziat
+        this.emit('systemMetrics', this.metrics.system);
+      }
+    }, 100);
     
     // Colectează metrici aplicație la fiecare 500ms
     this.appInterval = setInterval(() => {
@@ -138,12 +157,22 @@ class RealTimeMonitor extends EventEmitter {
   collectSystemMetrics() {
     // CPU Usage - Fixed calculation using time differences
     const cpus = os.cpus();
-    let totalIdle = 0;
-    let totalTick = 0;
-    
-    cpus.forEach(cpu => {
-      for (let type in cpu.times) {
-        totalTick += cpu.times[type];
+    let idleDeltaSum = 0;
+    let totalDeltaSum = 0;
+
+    for (let i = 0; i < cpus.length; i++) {
+      const timesNow = cpus[i].times;
+      const timesPrev = this.prevCpuTimes[i] || timesNow;
+
+      const totalNow = Object.values(timesNow).reduce((a, b) => a + b, 0);
+      const totalPrev = Object.values(timesPrev).reduce((a, b) => a + b, 0);
+
+      const totalDelta = totalNow - totalPrev;
+      const idleDelta = timesNow.idle - timesPrev.idle;
+
+      if (totalDelta > 0) {
+        totalDeltaSum += totalDelta;
+        idleDeltaSum += idleDelta;
       }
       totalIdle += cpu.times.idle;
     });
@@ -189,7 +218,7 @@ class RealTimeMonitor extends EventEmitter {
     // Add to history
     this.addToHistory('cpu', { timestamp: Date.now(), value: this.metrics.system.cpu.usage });
     this.addToHistory('memory', { 
-      timestamp: Date.now(), 
+      timestamp: nowTs, 
       value: this.metrics.system.memory.percentage 
     });
     
@@ -230,6 +259,37 @@ class RealTimeMonitor extends EventEmitter {
     
     this.emit('appMetrics', this.metrics.app);
   }
+  // Generic scraping run markers (any library)
+  onScrapingStart(library = 'scrapy') {
+    this.metrics.scraping.status = 'running';
+    this.metrics.scraping.library = library;
+    this.metrics.scraping.lastRun = Date.now();
+    this.metrics.scraping.lastRunArticles = 0;
+    this.metrics.scraping.lastRunErrors = 0;
+    this.metrics.scraping.lastProcessingTime = 0;
+    this.emit('scrapyMetrics', { // keep event name for client compatibility
+      ...this.metrics.scraping
+    });
+  }
+
+  onScrapingEnd(articlesProcessed = 0, errors = 0, library = 'scrapy') {
+    this.metrics.scraping.status = 'idle';
+    this.metrics.scraping.library = library;
+    const duration = Math.max(0, Date.now() - (this.metrics.scraping.lastRun || Date.now()));
+    this.metrics.scraping.lastRunArticles = articlesProcessed;
+    this.metrics.scraping.lastRunErrors = errors;
+    this.metrics.scraping.lastProcessingTime = duration;
+    this.metrics.scraping.totalArticles += articlesProcessed;
+    this.metrics.scraping.errorsTotal += errors;
+    this.metrics.scraping.runCount += 1;
+    const n = this.metrics.scraping.runCount;
+    const currentAvg = this.metrics.scraping.avgProcessingTime || 0;
+    this.metrics.scraping.avgProcessingTime = ((currentAvg * (n - 1)) + duration) / n;
+    // Persist history
+    try { if (this.db) this.db.insertScrapyMetric({ ts: Date.now(), last_articles: articlesProcessed, status: 'idle', last_errors: errors }); } catch {}
+    this.emit('scrapyMetrics', { ...this.metrics.scraping });
+  }
+
 
   addToHistory(metric, data) {
     if (!this.performanceHistory[metric]) {
@@ -245,7 +305,7 @@ class RealTimeMonitor extends EventEmitter {
 
   // HTTP Request Monitoring
   startHttpRequest(req, res) {
-    const requestId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     const startTime = Date.now();
     
     const requestData = {
@@ -304,7 +364,7 @@ class RealTimeMonitor extends EventEmitter {
     res.send = function(data) {
       const endTime = Date.now();
       const duration = endTime - startTime;
-      
+
       // Update metrics
       monitor.metrics.http.requests.active--;
       
@@ -314,7 +374,7 @@ class RealTimeMonitor extends EventEmitter {
         monitor.metrics.http.responses.error++;
         monitor.metrics.http.requests.errors++;
       }
-      
+
       // Update average response time
       monitor.updateAverageResponseTime(duration);
       
@@ -330,7 +390,7 @@ class RealTimeMonitor extends EventEmitter {
       routeStats.requests++;
       routeStats.totalTime += duration;
       routeStats.avgTime = routeStats.totalTime / routeStats.requests;
-      
+
       if (res.statusCode >= 400) {
         routeStats.errors++;
         
@@ -364,8 +424,9 @@ class RealTimeMonitor extends EventEmitter {
         requestId,
         statusCode: res.statusCode,
         duration,
-        responseSize: data?.length || 0,
-        route
+        responseSize: Number.isFinite(responseSize) ? responseSize : 0,
+        route,
+        endType
       });
       
       // Clear slow request timer and remove from active requests
@@ -521,6 +582,8 @@ class RealTimeMonitor extends EventEmitter {
     });
     
     this.emit('websocketMetrics', this.metrics.websocket);
+    // persist ~1Hz
+    this.persistWebsocketMetric();
   }
 
   onWebSocketDisconnect(clientId, reason) {
@@ -569,6 +632,7 @@ class RealTimeMonitor extends EventEmitter {
     this.metrics.websocket.connections.active--;
     
     this.emit('websocketMetrics', this.metrics.websocket);
+    this.persistWebsocketMetric();
   }
   
   onWebSocketError(clientId, error) {
@@ -690,6 +754,8 @@ class RealTimeMonitor extends EventEmitter {
     
     this.activeQueries.delete(queryId);
     this.emit('databaseMetrics', this.metrics.database);
+    // Persist DB metrics ~1Hz
+    this.persistDbMetric();
   }
 
   getQueryType(query) {
@@ -705,6 +771,9 @@ class RealTimeMonitor extends EventEmitter {
   onScrapyStart() {
     this.metrics.scrapy.status = 'running';
     this.metrics.scrapy.lastRun = Date.now();
+    this.metrics.scrapy.lastRunArticles = 0;
+    this.metrics.scrapy.lastRunErrors = 0;
+    this.metrics.scrapy.lastProcessingTime = 0;
     
     this.log('info', 'SCRAPY_START', {
       timestamp: this.metrics.scrapy.lastRun
@@ -715,19 +784,34 @@ class RealTimeMonitor extends EventEmitter {
 
   onScrapyEnd(articlesProcessed, errors = 0) {
     this.metrics.scrapy.status = 'idle';
-    this.metrics.scrapy.articlesProcessed += articlesProcessed;
-    this.metrics.scrapy.errors += errors;
-    
-    const duration = Date.now() - this.metrics.scrapy.lastRun;
-    this.metrics.scrapy.avgProcessingTime = duration;
-    
-    this.log('info', 'SCRAPY_END', {
-      duration,
-      articlesProcessed,
-      errors
-    });
-    
+    const duration = Math.max(0, Date.now() - (this.metrics.scrapy.lastRun || Date.now()));
+    // Per-run
+    this.metrics.scrapy.lastRunArticles = articlesProcessed;
+    this.metrics.scrapy.lastRunErrors = errors;
+    this.metrics.scrapy.lastProcessingTime = duration;
+    // Aggregates
+    this.metrics.scrapy.totalArticles += articlesProcessed;
+    this.metrics.scrapy.errorsTotal += errors;
+    this.metrics.scrapy.runCount += 1;
+    const n = this.metrics.scrapy.runCount;
+    const currentAvg = this.metrics.scrapy.avgProcessingTime || 0;
+    this.metrics.scrapy.avgProcessingTime = ((currentAvg * (n - 1)) + duration) / n;
+
+    this.log('info', 'SCRAPY_END', { duration, articlesProcessed, errors });
     this.emit('scrapyMetrics', this.metrics.scrapy);
+    // Persist snapshot of last run
+    try {
+      if (this.db) {
+        this.db.insertScrapyMetric({
+          ts: Date.now(),
+          last_articles: this.metrics.scrapy.lastRunArticles || 0,
+          status: this.metrics.scrapy.status || 'idle',
+          last_errors: this.metrics.scrapy.lastRunErrors || 0
+        }).catch(()=>{});
+        const cutoff = Date.now() - 3 * 60 * 60 * 1000;
+        this.db.pruneOldScrapyMetrics(cutoff).catch(()=>{});
+      }
+    } catch {}
   }
 
   // AI Service Monitoring
@@ -777,6 +861,7 @@ class RealTimeMonitor extends EventEmitter {
     }
     
     this.emit('aiMetrics', this.metrics.ai);
+    this.persistAiMetric();
   }
 
   calculateTokenCost(tokens) {
@@ -814,6 +899,9 @@ class RealTimeMonitor extends EventEmitter {
     
     // Emit for live updates
     this.emit('log', logEntry);
+    if (event === 'WEBSOCKET_CONNECT' || event === 'WEBSOCKET_DISCONNECT' || event === 'WEBSOCKET_MESSAGE') {
+      this.persistWebsocketMetric();
+    }
   }
 
   // Cleanup

@@ -178,19 +178,16 @@ function setupScrapyMonitoring(scrapyService) {
   const originalRunScraper = scrapyService.runScraper;
   
   scrapyService.runScraper = async function(...args) {
-    realTimeMonitor.onScrapyStart();
+    realTimeMonitor.onScrapingStart('scrapy');
     
     try {
       const result = await originalRunScraper.apply(this, args);
-      
       const articlesProcessed = result.articlesProcessed || 0;
       const errors = result.success ? 0 : 1;
-      
-      realTimeMonitor.onScrapyEnd(articlesProcessed, errors);
+      realTimeMonitor.onScrapingEnd(articlesProcessed, errors, 'scrapy');
       return result;
-      
     } catch (error) {
-      realTimeMonitor.onScrapyEnd(0, 1);
+      realTimeMonitor.onScrapingEnd(0, 1, 'scrapy');
       throw error;
     }
   };

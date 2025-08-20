@@ -5,7 +5,7 @@ import sys
 import json
 import requests
 from datetime import datetime
-from openai import OpenAI
+import requests
 from dotenv import load_dotenv
 
 # Încarcă variabilele de mediu
@@ -17,10 +17,21 @@ class DuplicatesPipeline:
     def __init__(self):
         self.seen_hashes = set()
 
+    def normalize_title(self, text: str) -> str:
+        text = (text or '').lower()
+        import re
+        text = re.sub(r'[^a-z0-9\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
     def process_item(self, item, spider):
-        # Generează hash pentru conținut
-        content_text = f"{item.get('title', '')}{item.get('content', '')}"
-        content_hash = hashlib.md5(content_text.encode('utf-8')).hexdigest()
+        # Generează hash pentru conținut (preferă URL-ul ca identificator stabil)
+        url = (item.get('url') or '').strip()
+        if url:
+            base = url
+        else:
+            base = f"{item.get('title','')}{item.get('content','')}"
+        content_hash = hashlib.md5(base.encode('utf-8')).hexdigest()
         item['content_hash'] = content_hash
         
         if content_hash in self.seen_hashes:
@@ -28,6 +39,21 @@ class DuplicatesPipeline:
             return None
         
         self.seen_hashes.add(content_hash)
+
+        # Soft duplicate check by normalized title similarity
+        fp_now = self.normalize_title(item.get('title', ''))
+        for fp in list(self.seen_hashes)[:2000]:
+            # quick token overlap using set Jaccard
+            try:
+                a = set(fp_now.split())
+                b = set(fp.split())
+                if a and b:
+                    j = len(a & b) / len(a | b)
+                    if j >= 0.8:
+                        spider.logger.info("Articol probabil duplicat (titlu similar)")
+                        return None
+            except Exception:
+                pass
         return item
 
 class AIAnalysisPipeline:
@@ -118,6 +144,63 @@ class AIAnalysisPipeline:
                 'analysis': 'Analysis parsing failed'
             }
     
+    def is_tradable(self, instrument_type: str, instrument_name: str, title: str) -> bool:
+        t = (instrument_type or '').lower()
+        name = (instrument_name or '').strip()
+        text = f"{name} {title}"
+        import re
+        if not name:
+            return False
+        if t == 'stocks':
+            return bool(re.search(r"\(([A-Z]{1,6})\)", text) or re.search(r"\b[A-Z]{1,6}\b", name))
+        if t == 'forex':
+            return bool(re.search(r"\b([A-Z]{3})/?([A-Z]{3})\b", text))
+        if t == 'crypto':
+            return bool(re.search(r"\b(BTC|ETH|SOL|ADA|XRP|DOGE|USDT|USDC|BNB)\b", text, re.I))
+        if t == 'commodities':
+            return bool(re.search(r"\b(gold|silver|oil|brent|wti|copper|corn|wheat|soy|natural gas)\b", text, re.I))
+        if t == 'indices':
+            return bool(re.search(r"(s&p|sp500|nasdaq|dow|dax|ftse|nikkei|cac|hang seng|tsx)", text, re.I))
+        return False
+
+    def extract_heuristic(self, title: str, content: str):
+        """Heuristic extraction when no AI key: returns (type, name) or (None, None)."""
+        import re
+        text = f"{title} {content}" if content else title
+        # Stocks: (AAPL) or EXCHANGE:TICKER
+        m = re.search(r"\(([A-Z]{1,6})\)", text)
+        if m:
+            return ('Stocks', m.group(1))
+        m = re.search(r"(nasdaq|nyse|amex|tsx|lse|sehk)\s*[:\-]\s*([A-Z]{1,6})", text, re.I)
+        if m:
+            return ('Stocks', m.group(2).upper())
+        # Forex: EUR/USD or USDJPY
+        m = re.search(r"\b([A-Z]{3})/?([A-Z]{3})\b", text)
+        if m:
+            pair = f"{m.group(1).upper()}/{m.group(2).upper()}"
+            return ('Forex', pair)
+        # Crypto: names or tickers
+        m = re.search(r"\b(BTC|ETH|SOL|ADA|XRP|DOGE|USDT|USDC|BNB)\b", text, re.I)
+        if m:
+            return ('Crypto', m.group(1).upper())
+        m = re.search(r"\b(bitcoin|ethereum|solana|cardano|ripple|dogecoin)\b", text, re.I)
+        if m:
+            name = m.group(1).lower()
+            mapping = {
+                'bitcoin': 'BTC', 'ethereum': 'ETH', 'solana': 'SOL',
+                'cardano': 'ADA', 'ripple': 'XRP', 'dogecoin': 'DOGE'
+            }
+            return ('Crypto', mapping.get(name, name.upper()))
+        # Commodities
+        if re.search(r"\b(gold|silver|oil|brent|wti|copper|corn|wheat|soy|natural gas)\b", text, re.I):
+            # Use matched commodity name as instrument_name
+            name = re.search(r"\b(gold|silver|oil|brent|wti|copper|corn|wheat|soy|natural gas)\b", text, re.I).group(1)
+            return ('Commodities', name.title())
+        # Indices
+        if re.search(r"(s&p|sp500|nasdaq\s*100?|dow\s*jones|dax|ftse|nikkei|cac|hang\s*seng|tsx)", text, re.I):
+            return ('Indices', 'Index')
+        return (None, None)
+
     def process_item(self, item, spider):
         # Verifică dacă AI analysis este disponibil
         if not self.ai_provider or (self.ai_provider == 'openai' and not self.client) or (self.ai_provider == 'ollama' and not self.ollama_model):
@@ -228,6 +311,7 @@ class DatabasePipeline:
     def __init__(self):
         self.connection = None
         self.db_path = None
+        self.saved_count = 0
     
     def open_spider(self, spider):
         # Găsește baza de date existentă
@@ -242,16 +326,28 @@ class DatabasePipeline:
         self.connection.execute('PRAGMA journal_mode=WAL')  # Pentru concurrency
         
     def close_spider(self, spider):
-        if self.connection:
-            self.connection.close()
+        try:
+            spider.logger.info(f"saved to database: {self.saved_count}")
+        finally:
+            if self.connection:
+                self.connection.close()
     
     def process_item(self, item, spider):
         try:
+            # Guard invalid item
+            if item is None or not isinstance(item, dict):
+                return item
+            # Ensure content_hash exists
+            ch = item.get('content_hash')
+            if not ch:
+                base = f"{item.get('title','')}{item.get('content','')}"
+                item['content_hash'] = hashlib.md5(base.encode('utf-8')).hexdigest()
+
             # Verifică dacă articolul există deja
             cursor = self.connection.cursor()
             cursor.execute(
                 "SELECT id FROM news_articles WHERE content_hash = ?",
-                (item['content_hash'],)
+                (item.get('content_hash',''),)
             )
             
             if cursor.fetchone():
@@ -276,6 +372,43 @@ class DatabasePipeline:
             else:
                 published_at = datetime.now().isoformat()
             
+            # Enforce non-empty instrument; as last resort, try heuristic one more time and then default to market index
+            if not item.get('instrument_name'):
+                itype, iname = self.extract_heuristic(item.get('title',''), item.get('content',''))
+                if itype and iname:
+                    item['instrument_type'] = item.get('instrument_type') or itype
+                    item['instrument_name'] = iname
+                else:
+                    # Default to broad market index so item appears in feed
+                    item['instrument_type'] = item.get('instrument_type') or 'Indices'
+                    item['instrument_name'] = '^GSPC'
+
+            # Resolve and verify precise Yahoo symbol via platform API. If not verified, optionally keep based on env.
+            try:
+                platform = os.getenv('PLATFORM_API_URL', 'http://localhost:8080')
+                r = requests.post(f"{platform}/api/resolve-yahoo", json={
+                    'instrument_type': item.get('instrument_type'),
+                    'instrument_name': item.get('instrument_name'),
+                    'title': item.get('title','')
+                }, timeout=10)
+                if r.status_code == 200:
+                    data = r.json() or {}
+                    symbol = data.get('symbol')
+                    if symbol:
+                        item['instrument_name'] = symbol
+                    else:
+                        # Fallback: allow unverified instruments if enabled
+                        allow_unverified = os.getenv('ALLOW_UNVERIFIED_INSTRUMENTS', '1') in ('1','true','yes')
+                        if not allow_unverified:
+                            return item  # drop silently
+                else:
+                    if os.getenv('ALLOW_UNVERIFIED_INSTRUMENTS', '1') not in ('1','true','yes'):
+                        return item
+            except Exception as e:
+                spider.logger.warning(f"Resolve-yahoo failed: {e}")
+                if os.getenv('ALLOW_UNVERIFIED_INSTRUMENTS', '1') not in ('1','true','yes'):
+                    return item
+
             cursor.execute("""
                 INSERT INTO news_articles 
                 (title, summary, instrument_type, instrument_name, recommendation, 
@@ -294,6 +427,7 @@ class DatabasePipeline:
             ))
             
             self.connection.commit()
+            self.saved_count += 1
             spider.logger.info(f"✅ Article saved to database: {item.get('title', '')[:50]}...")
             
         except Exception as e:

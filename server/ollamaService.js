@@ -1,4 +1,16 @@
 const axios = require('axios');
+const os = require('os');
+
+// Low-latency defaults; can be overridden via env vars
+const DEFAULT_OLLAMA_OPTIONS = {
+  temperature: parseFloat(process.env.OLLAMA_TEMPERATURE || '0.7'),
+  num_predict: parseInt(process.env.OLLAMA_NUM_PREDICT || '120', 10),
+  top_k: parseInt(process.env.OLLAMA_TOP_K || '40', 10),
+  top_p: parseFloat(process.env.OLLAMA_TOP_P || '0.9'),
+  // Use fewer threads than total cores to avoid 100% CPU saturation, allow override
+  num_thread: parseInt(process.env.OLLAMA_NUM_THREAD || `${Math.max(2, Math.floor(os.cpus().length * 0.6))}` , 10),
+  num_ctx: parseInt(process.env.OLLAMA_NUM_CTX || '2048', 10)
+};
 
 class OllamaService {
   constructor(baseUrl = null) {
@@ -42,13 +54,19 @@ Please analyze this financial news article and provide your response in JSON for
   "instrument_name": "specific instrument name if mentioned or null",
   "recommendation": "BUY/SELL/HOLD",
   "confidence_score": "number between 1-100"
-}`;
+}
+
+Return ONLY valid JSON. Do not include any extra text, markdown, or code fences.`;
 
       const response = await axios.post(`${this.baseUrl}/api/generate`, {
         model: model,
         prompt: analysisPrompt,
         stream: false,
+        format: 'json',
+        keep_alive: process.env.OLLAMA_KEEP_ALIVE || '1h',
         options: {
+          ...DEFAULT_OLLAMA_OPTIONS,
+          // Analysis should be concise but complete
           temperature: 0.2,
           num_predict: tokenLimit
         }
@@ -180,6 +198,7 @@ Please analyze this financial news article and provide your response in JSON for
         model: model,
         prompt: testPrompt,
         stream: false,
+        keep_alive: process.env.OLLAMA_KEEP_ALIVE || '1h',
         options: {
           num_predict: numPredict
         }
@@ -240,6 +259,7 @@ Please analyze this financial news article and provide your response in JSON for
         model: model,
         prompt: prompt,
         stream: false,
+        keep_alive: process.env.OLLAMA_KEEP_ALIVE || '1h',
         options: {
           temperature: 0.7,
           num_predict: tokenLimit,
@@ -282,6 +302,7 @@ Please analyze this financial news article and provide your response in JSON for
         model: model,
         prompt: prompt,
         stream: true,
+        keep_alive: process.env.OLLAMA_KEEP_ALIVE || '1h',
         options: {
           temperature: 0.7,
           num_predict: tokenLimit,
