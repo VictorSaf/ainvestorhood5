@@ -1,5 +1,7 @@
 const os = require('os');
 const fs = require('fs');
+const { exec } = require('child_process');
+const Database = require('./database');
 const EventEmitter = require('events');
 
 class RealTimeMonitor extends EventEmitter {
@@ -11,7 +13,8 @@ class RealTimeMonitor extends EventEmitter {
         cpu: { usage: 0, cores: os.cpus().length },
         memory: { used: 0, total: os.totalmem(), free: 0, percentage: 0 },
         uptime: 0,
-        loadAverage: []
+        loadAverage: [],
+        gpu: { available: false, usage: 0, memory: { used: 0, total: 0, percentage: 0 } }
       },
       app: {
         startTime: Date.now(),
@@ -34,12 +37,17 @@ class RealTimeMonitor extends EventEmitter {
         connections: { active: 0, pool: 0 },
         operations: { read: 0, write: 0, delete: 0 }
       },
-      scrapy: {
+      scraping: {
         status: 'idle',
+        library: 'scrapy',
         lastRun: null,
-        articlesProcessed: 0,
-        errors: 0,
-        avgProcessingTime: 0
+        lastRunArticles: 0,
+        lastRunErrors: 0,
+        lastProcessingTime: 0,
+        totalArticles: 0,
+        errorsTotal: 0,
+        avgProcessingTime: 0,
+        runCount: 0
       },
       ai: {
         requests: { total: 0, active: 0, errors: 0 },
@@ -55,10 +63,20 @@ class RealTimeMonitor extends EventEmitter {
     this.performanceHistory = {
       cpu: [],
       memory: [],
+      gpu: [],
+      gpuMemory: [],
       requests: [],
       responses: []
     };
-    this.maxHistoryPoints = 100;
+    // Keep last 2 hours at 1 sample/sec
+    this.maxHistoryPoints = 2 * 60 * 60; // 7200
+    this._lastGpuSampleAt = 0;
+    this._lastPersistTs = 0;
+    this.db = null;
+    this._lastWsPersistTs = 0;
+
+    // Keep previous CPU times for delta-based usage calculation
+    this.prevCpuTimes = os.cpus().map(cpu => ({ ...cpu.times }));
   }
 
   start() {
@@ -66,11 +84,20 @@ class RealTimeMonitor extends EventEmitter {
     
     this.isRunning = true;
     console.log('🔍 Real-time monitoring started');
+    // Lazy-init DB for metrics persistence
+    try { this.db = new Database(); } catch (e) { console.warn('DB init for monitor failed:', e.message); }
     
-    // Colectează metrici sistem la fiecare secundă
+    // Colectează metrici sistem la ~10Hz pentru grafic fluent, emis tot la 1Hz
+    let lastEmit = 0;
     this.systemInterval = setInterval(() => {
+      const beforeEmit = Date.now();
       this.collectSystemMetrics();
-    }, 1000);
+      if (beforeEmit - lastEmit >= 1000) {
+        lastEmit = beforeEmit;
+        // Emit snapshot explicit în cazul în care sampleGpu este întârziat
+        this.emit('systemMetrics', this.metrics.system);
+      }
+    }, 100);
     
     // Colectează metrici aplicație la fiecare 500ms
     this.appInterval = setInterval(() => {
@@ -94,22 +121,34 @@ class RealTimeMonitor extends EventEmitter {
   }
 
   collectSystemMetrics() {
-    // CPU Usage
+    // CPU Usage (delta across samples for real-time accuracy)
     const cpus = os.cpus();
-    let totalIdle = 0;
-    let totalTick = 0;
-    
-    cpus.forEach(cpu => {
-      for (let type in cpu.times) {
-        totalTick += cpu.times[type];
+    let idleDeltaSum = 0;
+    let totalDeltaSum = 0;
+
+    for (let i = 0; i < cpus.length; i++) {
+      const timesNow = cpus[i].times;
+      const timesPrev = this.prevCpuTimes[i] || timesNow;
+
+      const totalNow = Object.values(timesNow).reduce((a, b) => a + b, 0);
+      const totalPrev = Object.values(timesPrev).reduce((a, b) => a + b, 0);
+
+      const totalDelta = totalNow - totalPrev;
+      const idleDelta = timesNow.idle - timesPrev.idle;
+
+      if (totalDelta > 0) {
+        totalDeltaSum += totalDelta;
+        idleDeltaSum += idleDelta;
       }
-      totalIdle += cpu.times.idle;
-    });
-    
-    const idle = totalIdle / cpus.length;
-    const total = totalTick / cpus.length;
-    const usage = 100 - ~~(100 * idle / total);
-    
+
+      // Update previous snapshot
+      this.prevCpuTimes[i] = { ...timesNow };
+    }
+
+    const usage = totalDeltaSum > 0
+      ? Math.round(100 * (1 - idleDeltaSum / totalDeltaSum))
+      : this.metrics.system.cpu.usage;
+
     this.metrics.system.cpu.usage = usage;
     
     // Memory
@@ -129,14 +168,88 @@ class RealTimeMonitor extends EventEmitter {
     this.metrics.system.loadAverage = os.loadavg();
     
     // Adaugă în istoric
-    this.addToHistory('cpu', { timestamp: Date.now(), value: usage });
+    const nowTs = Date.now();
+    this.addToHistory('cpu', { timestamp: nowTs, value: usage });
     this.addToHistory('memory', { 
-      timestamp: Date.now(), 
+      timestamp: nowTs, 
       value: this.metrics.system.memory.percentage 
     });
     
-    // Emit pentru actualizare live
-    this.emit('systemMetrics', this.metrics.system);
+    // GPU metrics (sample every 2s to reduce overhead)
+    const now = nowTs;
+    if (now - this._lastGpuSampleAt >= 2000) {
+      this._lastGpuSampleAt = now;
+      this.sampleGpuMetrics().then((gpu) => {
+        if (gpu) {
+          this.metrics.system.gpu = gpu;
+          this.addToHistory('gpu', { timestamp: now, value: gpu.usage || 0 });
+          const gpuMemPct = gpu.memory && gpu.memory.total > 0 ? Math.round((gpu.memory.used / gpu.memory.total) * 100) : 0;
+          this.addToHistory('gpuMemory', { timestamp: now, value: gpuMemPct });
+        }
+        // Persist once per second
+        this.persistSystemMetric(now);
+        // Emit pentru actualizare live
+        this.emit('systemMetrics', this.metrics.system);
+      }).catch(() => {
+        this.persistSystemMetric(now);
+        // Emit fără GPU dacă sampling-ul a eșuat
+        this.emit('systemMetrics', this.metrics.system);
+      });
+    } else {
+      this.persistSystemMetric(now);
+      // Emit fără a re-sample GPU
+      this.emit('systemMetrics', this.metrics.system);
+    }
+  }
+
+  persistSystemMetric(nowTs) {
+    if (!this.db) return;
+    if (nowTs - this._lastPersistTs < 1000) return; // ~1Hz
+    this._lastPersistTs = nowTs;
+    try {
+      const cpu = this.metrics.system.cpu.usage || 0;
+      const mem = this.metrics.system.memory?.percentage || 0;
+      const gpu = this.metrics.system.gpu?.usage || 0;
+      const gpuMem = this.metrics.system.gpu?.memory?.percentage || 0;
+      this.db.insertSystemMetric({ ts: nowTs, cpu_pct: cpu, mem_pct: mem, gpu_pct: gpu, gpu_mem_pct: gpuMem }).catch(()=>{});
+      // Prune older than 3 hours to keep DB small
+      const threeHoursAgo = nowTs - 3 * 60 * 60 * 1000;
+      this.db.pruneOldSystemMetrics(threeHoursAgo).catch(()=>{});
+    } catch {}
+  }
+
+  async sampleGpuMetrics() {
+    return new Promise((resolve) => {
+      // Try nvidia-smi
+      exec('nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits', { timeout: 1000 }, (err, stdout) => {
+        if (!err && stdout) {
+          try {
+            const [utilStr, memUsedStr, memTotalStr] = stdout.trim().split(',').map(s => s.trim());
+            const usage = parseInt(utilStr) || 0;
+            const memUsed = parseInt(memUsedStr) * 1024 * 1024 || 0; // MB->B if nounits returns MB; adjust if needed
+            const memTotal = parseInt(memTotalStr) * 1024 * 1024 || 0;
+            return resolve({ available: true, usage, memory: { used: memUsed, total: memTotal, percentage: memTotal ? Math.round((memUsed / memTotal) * 100) : 0 } });
+          } catch {}
+        }
+        // Try rocm-smi (AMD) minimal utilization, skipped if not present
+        exec('rocm-smi --showuse --csv', { timeout: 1000 }, (err2, stdout2) => {
+          if (!err2 && stdout2 && stdout2.toLowerCase().includes('gpu use')) {
+            try {
+              const lines = stdout2.trim().split('\n');
+              const header = lines[0].split(',').map(s=>s.trim().toLowerCase());
+              const idx = header.indexOf('gpu use (%)');
+              if (idx >= 0) {
+                const first = lines[1].split(',');
+                const usage = parseInt(first[idx]) || 0;
+                return resolve({ available: true, usage, memory: { used: 0, total: 0, percentage: 0 } });
+              }
+            } catch {}
+          }
+          // Fallback: no GPU
+          return resolve({ available: false, usage: 0, memory: { used: 0, total: 0, percentage: 0 } });
+        });
+      });
+    });
   }
 
   collectAppMetrics() {
@@ -154,6 +267,37 @@ class RealTimeMonitor extends EventEmitter {
     
     this.emit('appMetrics', this.metrics.app);
   }
+  // Generic scraping run markers (any library)
+  onScrapingStart(library = 'scrapy') {
+    this.metrics.scraping.status = 'running';
+    this.metrics.scraping.library = library;
+    this.metrics.scraping.lastRun = Date.now();
+    this.metrics.scraping.lastRunArticles = 0;
+    this.metrics.scraping.lastRunErrors = 0;
+    this.metrics.scraping.lastProcessingTime = 0;
+    this.emit('scrapyMetrics', { // keep event name for client compatibility
+      ...this.metrics.scraping
+    });
+  }
+
+  onScrapingEnd(articlesProcessed = 0, errors = 0, library = 'scrapy') {
+    this.metrics.scraping.status = 'idle';
+    this.metrics.scraping.library = library;
+    const duration = Math.max(0, Date.now() - (this.metrics.scraping.lastRun || Date.now()));
+    this.metrics.scraping.lastRunArticles = articlesProcessed;
+    this.metrics.scraping.lastRunErrors = errors;
+    this.metrics.scraping.lastProcessingTime = duration;
+    this.metrics.scraping.totalArticles += articlesProcessed;
+    this.metrics.scraping.errorsTotal += errors;
+    this.metrics.scraping.runCount += 1;
+    const n = this.metrics.scraping.runCount;
+    const currentAvg = this.metrics.scraping.avgProcessingTime || 0;
+    this.metrics.scraping.avgProcessingTime = ((currentAvg * (n - 1)) + duration) / n;
+    // Persist history
+    try { if (this.db) this.db.insertScrapyMetric({ ts: Date.now(), last_articles: articlesProcessed, status: 'idle', last_errors: errors }); } catch {}
+    this.emit('scrapyMetrics', { ...this.metrics.scraping });
+  }
+
 
   addToHistory(metric, data) {
     if (!this.performanceHistory[metric]) {
@@ -169,7 +313,7 @@ class RealTimeMonitor extends EventEmitter {
 
   // HTTP Request Monitoring
   startHttpRequest(req, res) {
-    const requestId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     const startTime = Date.now();
     
     const requestData = {
@@ -196,53 +340,58 @@ class RealTimeMonitor extends EventEmitter {
       userAgent: requestData.userAgent
     });
     
-    // Monitor response
-    const originalSend = res.send;
-    res.send = function(data) {
+    // Monitor response via finish/close to cover all send methods
+    let completed = false;
+    const finalize = (endType = 'finish') => {
+      if (completed) return;
+      completed = true;
       const endTime = Date.now();
       const duration = endTime - startTime;
-      
+
       // Update metrics
-      this.metrics.http.requests.active--;
-      
+      this.metrics.http.requests.active = Math.max(0, this.metrics.http.requests.active - 1);
+
       if (res.statusCode >= 200 && res.statusCode < 400) {
         this.metrics.http.responses.success++;
       } else {
         this.metrics.http.responses.error++;
         this.metrics.http.requests.errors++;
       }
-      
+
       // Update average response time
       this.updateAverageResponseTime(duration);
-      
+
       // Update route statistics
-      const route = `${req.method} ${req.route?.path || req.url}`;
+      const route = `${req.method} ${req.route?.path || req.baseUrl || req.originalUrl || req.url}`;
       const routeStats = this.metrics.http.routes.get(route) || {
         requests: 0, errors: 0, avgTime: 0, totalTime: 0
       };
-      
+
       routeStats.requests++;
       routeStats.totalTime += duration;
       routeStats.avgTime = routeStats.totalTime / routeStats.requests;
-      
+
       if (res.statusCode >= 400) {
         routeStats.errors++;
       }
-      
+
       this.metrics.http.routes.set(route, routeStats);
-      
+
       // Log detailed response
+      const contentLengthHeader = res.getHeader && res.getHeader('content-length');
+      const responseSize = typeof contentLengthHeader === 'string' ? parseInt(contentLengthHeader) : (contentLengthHeader || 0);
       this.log('info', 'HTTP_REQUEST_END', {
         requestId,
         statusCode: res.statusCode,
         duration,
-        responseSize: data?.length || 0,
-        route
+        responseSize: Number.isFinite(responseSize) ? responseSize : 0,
+        route,
+        endType
       });
-      
+
       // Remove from active requests
       this.activeRequests.delete(requestId);
-      
+
       // Add to history
       this.addToHistory('requests', {
         timestamp: endTime,
@@ -250,12 +399,19 @@ class RealTimeMonitor extends EventEmitter {
         statusCode: res.statusCode,
         route
       });
-      
-      // Emit live update
-      this.emit('httpMetrics', this.metrics.http);
-      
-      return originalSend.call(res, data);
-    }.bind(this);
+
+      // Emit live update (serialize routes Map for transport)
+      const httpSnapshot = {
+        ...this.metrics.http,
+        routes: Object.fromEntries(this.metrics.http.routes)
+      };
+      this.emit('httpMetrics', httpSnapshot);
+      // Persist snapshot throttled
+      try { this.persistHttpMetric(); } catch {}
+    };
+
+    res.on('finish', finalize);
+    res.on('close', () => finalize('close'));
     
     return requestId;
   }
@@ -327,6 +483,8 @@ class RealTimeMonitor extends EventEmitter {
     });
     
     this.emit('websocketMetrics', this.metrics.websocket);
+    // persist ~1Hz
+    this.persistWebsocketMetric();
   }
 
   onWebSocketDisconnect(clientId, reason) {
@@ -347,6 +505,7 @@ class RealTimeMonitor extends EventEmitter {
     this.metrics.websocket.connections.active--;
     
     this.emit('websocketMetrics', this.metrics.websocket);
+    this.persistWebsocketMetric();
   }
 
   // Database Monitoring
@@ -422,6 +581,8 @@ class RealTimeMonitor extends EventEmitter {
     
     this.activeQueries.delete(queryId);
     this.emit('databaseMetrics', this.metrics.database);
+    // Persist DB metrics ~1Hz
+    this.persistDbMetric();
   }
 
   getQueryType(query) {
@@ -437,6 +598,9 @@ class RealTimeMonitor extends EventEmitter {
   onScrapyStart() {
     this.metrics.scrapy.status = 'running';
     this.metrics.scrapy.lastRun = Date.now();
+    this.metrics.scrapy.lastRunArticles = 0;
+    this.metrics.scrapy.lastRunErrors = 0;
+    this.metrics.scrapy.lastProcessingTime = 0;
     
     this.log('info', 'SCRAPY_START', {
       timestamp: this.metrics.scrapy.lastRun
@@ -447,19 +611,34 @@ class RealTimeMonitor extends EventEmitter {
 
   onScrapyEnd(articlesProcessed, errors = 0) {
     this.metrics.scrapy.status = 'idle';
-    this.metrics.scrapy.articlesProcessed += articlesProcessed;
-    this.metrics.scrapy.errors += errors;
-    
-    const duration = Date.now() - this.metrics.scrapy.lastRun;
-    this.metrics.scrapy.avgProcessingTime = duration;
-    
-    this.log('info', 'SCRAPY_END', {
-      duration,
-      articlesProcessed,
-      errors
-    });
-    
+    const duration = Math.max(0, Date.now() - (this.metrics.scrapy.lastRun || Date.now()));
+    // Per-run
+    this.metrics.scrapy.lastRunArticles = articlesProcessed;
+    this.metrics.scrapy.lastRunErrors = errors;
+    this.metrics.scrapy.lastProcessingTime = duration;
+    // Aggregates
+    this.metrics.scrapy.totalArticles += articlesProcessed;
+    this.metrics.scrapy.errorsTotal += errors;
+    this.metrics.scrapy.runCount += 1;
+    const n = this.metrics.scrapy.runCount;
+    const currentAvg = this.metrics.scrapy.avgProcessingTime || 0;
+    this.metrics.scrapy.avgProcessingTime = ((currentAvg * (n - 1)) + duration) / n;
+
+    this.log('info', 'SCRAPY_END', { duration, articlesProcessed, errors });
     this.emit('scrapyMetrics', this.metrics.scrapy);
+    // Persist snapshot of last run
+    try {
+      if (this.db) {
+        this.db.insertScrapyMetric({
+          ts: Date.now(),
+          last_articles: this.metrics.scrapy.lastRunArticles || 0,
+          status: this.metrics.scrapy.status || 'idle',
+          last_errors: this.metrics.scrapy.lastRunErrors || 0
+        }).catch(()=>{});
+        const cutoff = Date.now() - 3 * 60 * 60 * 1000;
+        this.db.pruneOldScrapyMetrics(cutoff).catch(()=>{});
+      }
+    } catch {}
   }
 
   // AI Service Monitoring
@@ -509,6 +688,7 @@ class RealTimeMonitor extends EventEmitter {
     }
     
     this.emit('aiMetrics', this.metrics.ai);
+    this.persistAiMetric();
   }
 
   calculateTokenCost(tokens) {
@@ -546,19 +726,57 @@ class RealTimeMonitor extends EventEmitter {
     
     // Emit for live updates
     this.emit('log', logEntry);
+    if (event === 'WEBSOCKET_CONNECT' || event === 'WEBSOCKET_DISCONNECT' || event === 'WEBSOCKET_MESSAGE') {
+      this.persistWebsocketMetric();
+    }
   }
 
   // Cleanup
   cleanup() {
     // Remove old requests and queries that might be stuck
     const now = Date.now();
-    const timeout = 30000; // 30 seconds
+    const timeout = parseInt(process.env.MONITOR_HTTP_TIMEOUT_MS || '20000'); // configurable, default 20s
+    const debugTimeout = parseInt(process.env.MONITOR_HTTP_TIMEOUT_DEBUG_MS || '60000');
+    const isDebugLongRunning = (url = '') => {
+      return url.startsWith('/api/ollama/test') || url.startsWith('/api/ai-chat-stream');
+    };
     
     for (const [id, request] of this.activeRequests) {
-      if (now - request.startTime > timeout) {
-        this.log('warn', 'HTTP_REQUEST_TIMEOUT', { requestId: id });
+      const perRequestTimeout = isDebugLongRunning(request.url) ? debugTimeout : timeout;
+      const shouldCountAsError = !isDebugLongRunning(request.url);
+      if (now - request.startTime > perRequestTimeout) {
+        // Log with useful context
+        const ageMs = now - request.startTime;
+        this.log('warn', 'HTTP_REQUEST_TIMEOUT', {
+          requestId: id,
+          method: request.method,
+          url: request.url,
+          ageMs
+        });
+
+        // Update metrics to reflect timeout as an error
+        this.metrics.http.requests.active = Math.max(0, this.metrics.http.requests.active - 1);
+        if (shouldCountAsError) {
+          this.metrics.http.requests.errors++;
+          this.metrics.http.responses.error++;
+        }
+
+        // Update per-route stats
+        const route = `${request.method} ${request.url}`;
+        const routeStats = this.metrics.http.routes.get(route) || {
+          requests: 0, errors: 0, avgTime: 0, totalTime: 0
+        };
+        routeStats.requests++;
+        if (shouldCountAsError) routeStats.errors++;
+        this.metrics.http.routes.set(route, routeStats);
+
+        // Remove from active set and emit updated snapshot
         this.activeRequests.delete(id);
-        this.metrics.http.requests.active--;
+        const httpSnapshot = {
+          ...this.metrics.http,
+          routes: Object.fromEntries(this.metrics.http.routes)
+        };
+        this.emit('httpMetrics', httpSnapshot);
       }
     }
     
@@ -569,6 +787,79 @@ class RealTimeMonitor extends EventEmitter {
         this.metrics.database.queries.active--;
       }
     }
+
+    // Persist HTTP snapshot ~1Hz
+    this.persistHttpMetric();
+  }
+
+  persistWebsocketMetric() {
+    if (!this.db) return;
+    const nowTs = Date.now();
+    if (nowTs - this._lastWsPersistTs < 1000) return;
+    this._lastWsPersistTs = nowTs;
+    try {
+      const ws = this.metrics.websocket;
+      this.db.insertWebsocketMetric({
+        ts: nowTs,
+        active: ws.connections?.active || 0,
+        total: ws.connections?.total || 0,
+        msg_sent: ws.messages?.sent || 0,
+        msg_recv: ws.messages?.received || 0,
+        errors: ws.messages?.errors || 0
+      }).catch(()=>{});
+      const threeHoursAgo = nowTs - 3 * 60 * 60 * 1000;
+      this.db.pruneOldWebsocketMetrics(threeHoursAgo).catch(()=>{});
+    } catch {}
+  }
+
+  persistHttpMetric() {
+    if (!this.db) return;
+    const nowTs = Date.now();
+    if (this._lastHttpPersistTs && nowTs - this._lastHttpPersistTs < 1000) return;
+    this._lastHttpPersistTs = nowTs;
+    const http = this.metrics.http;
+    this.db.insertHttpMetric({
+      ts: nowTs,
+      active: http.requests?.active || 0,
+      total: http.requests?.total || 0,
+      errors: http.requests?.errors || 0,
+      avg_rt: Math.round(http.requests?.avgResponseTime || 0)
+    }).catch(()=>{});
+    const cutoff = nowTs - 3 * 60 * 60 * 1000;
+    this.db.pruneOldHttpMetrics(cutoff).catch(()=>{});
+  }
+
+  persistDbMetric() {
+    if (!this.db) return;
+    const nowTs = Date.now();
+    if (this._lastDbPersistTs && nowTs - this._lastDbPersistTs < 1000) return;
+    this._lastDbPersistTs = nowTs;
+    const dbm = this.metrics.database;
+    this.db.insertDbMetric({
+      ts: nowTs,
+      active: dbm.queries?.active || 0,
+      total: dbm.queries?.total || 0,
+      errors: dbm.queries?.errors || 0,
+      avg_ms: Math.round(dbm.queries?.avgTime || 0)
+    }).catch(()=>{});
+    const cutoff = nowTs - 3 * 60 * 60 * 1000;
+    this.db.pruneOldDbMetrics(cutoff).catch(()=>{});
+  }
+
+  persistAiMetric() {
+    if (!this.db) return;
+    const nowTs = Date.now();
+    if (this._lastAiPersistTs && nowTs - this._lastAiPersistTs < 1000) return;
+    this._lastAiPersistTs = nowTs;
+    const aim = this.metrics.ai;
+    this.db.insertAiMetric({
+      ts: nowTs,
+      avg_ms: Math.round(aim.avgResponseTime || 0),
+      total: aim.requests?.total || 0,
+      errors: aim.requests?.errors || 0
+    }).catch(()=>{});
+    const cutoff = nowTs - 3 * 60 * 60 * 1000;
+    this.db.pruneOldAiMetrics(cutoff).catch(()=>{});
   }
 
   // Get all metrics

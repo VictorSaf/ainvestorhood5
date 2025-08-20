@@ -1,21 +1,37 @@
+const Database = require('./database');
+
 class LiveStreamService {
   constructor() {
     this.io = null;
     this.connectedClients = new Set();
     this.recentArticles = [];
     this.maxRecentArticles = 50;
+    this.db = null;
+    this.currentRun = { processed: 0, duplicates: 0, errors: 0, started: false };
   }
 
   init(io) {
     this.io = io;
+    try { this.db = new Database(); } catch {}
     console.log('📡 Live stream service initialized');
 
     io.on('connection', (socket) => {
       this.connectedClients.add(socket.id);
       console.log(`🔗 Client connected: ${socket.id} (${this.connectedClients.size} total)`);
 
-      // Send recent articles to new client
-      socket.emit('initial-articles', this.recentArticles);
+      // Send recent articles to new client; if empty, hydrate from DB
+      if (this.recentArticles.length === 0 && this.db) {
+        Promise.resolve(this.db.getRecentArticles(this.maxRecentArticles))
+          .then((articles) => {
+            this.recentArticles = articles || [];
+            socket.emit('initial-articles', this.recentArticles);
+          })
+          .catch(() => {
+            socket.emit('initial-articles', this.recentArticles);
+          });
+      } else {
+        socket.emit('initial-articles', this.recentArticles);
+      }
 
       // Handle client requests
       socket.on('request-refresh', () => {
@@ -83,11 +99,25 @@ class LiveStreamService {
   // Broadcast news collection progress
   broadcastCollectionProgress(progress) {
     if (!this.io) return;
-
-    this.io.emit('collection-progress', {
-      ...progress,
+    // Maintain rolling counters for realtime UI
+    if (progress.started) {
+      this.currentRun = { processed: 0, duplicates: 0, errors: 0, started: true };
+    }
+    if (typeof progress.processed === 'number') this.currentRun.processed = progress.processed;
+    if (typeof progress.duplicates === 'number') this.currentRun.duplicates = progress.duplicates;
+    if (typeof progress.errors === 'number') this.currentRun.errors = progress.errors;
+    const payload = {
+      processed: this.currentRun.processed,
+      duplicates: this.currentRun.duplicates,
+      errors: this.currentRun.errors,
+      started: this.currentRun.started,
+      completed: !!progress.completed,
       timestamp: new Date().toISOString()
-    });
+    };
+    if (payload.completed) {
+      this.currentRun.started = false;
+    }
+    this.io.emit('collection-progress', payload);
   }
 
   // Get current statistics
@@ -101,7 +131,17 @@ class LiveStreamService {
 
   // Sync articles from database
   syncArticles(articles) {
-    this.recentArticles = articles.slice(0, this.maxRecentArticles);
+    // De-duplicate by content_hash to avoid showing duplicates in feed
+    const seen = new Set();
+    const deduped = [];
+    for (const a of articles) {
+      const key = a.content_hash || `${a.title}|${a.source_url}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(a);
+      if (deduped.length >= this.maxRecentArticles) break;
+    }
+    this.recentArticles = deduped;
     
     if (this.io) {
       this.io.emit('articles-sync', {

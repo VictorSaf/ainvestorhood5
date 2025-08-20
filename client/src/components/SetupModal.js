@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Key, AlertCircle, CheckCircle, Brain, Server } from 'lucide-react';
 import axios from 'axios';
+import ScrapingPanel from './ScrapingPanel';
 
 const SetupModal = ({ onComplete }) => {
   const [aiProvider, setAiProvider] = useState('openai');
@@ -12,10 +13,14 @@ const SetupModal = ({ onComplete }) => {
   const [error, setError] = useState('');
   const [ollamaRunning, setOllamaRunning] = useState(false);
   const [testingModel, setTestingModel] = useState(false);
+  const [analysisTokens, setAnalysisTokens] = useState(160);
+  const [chatTokens, setChatTokens] = useState(64);
+  const [minIntervalSec, setMinIntervalSec] = useState(30);
 
   useEffect(() => {
     fetchOllamaModels();
     loadExistingConfig();
+    loadAISettings();
   }, []);
 
   const loadExistingConfig = async () => {
@@ -34,6 +39,19 @@ const SetupModal = ({ onComplete }) => {
       }
     } catch (error) {
       console.error('Error loading config:', error);
+    }
+  };
+
+  const loadAISettings = async () => {
+    try {
+      const res = await axios.get('http://localhost:8080/api/ai-settings');
+      if (res.data) {
+        if (res.data.analysisTokens) setAnalysisTokens(res.data.analysisTokens);
+        if (res.data.chatTokens) setChatTokens(res.data.chatTokens);
+        if (res.data.minIntervalSec) setMinIntervalSec(res.data.minIntervalSec);
+      }
+    } catch (e) {
+      // ignore
     }
   };
 
@@ -112,6 +130,12 @@ const SetupModal = ({ onComplete }) => {
       });
       
       console.log('✅ Server response:', response.data);
+      // Save AI runtime settings
+      await axios.post('http://localhost:8080/api/ai-settings', {
+        analysisTokens: Number(analysisTokens),
+        chatTokens: Number(chatTokens),
+        minIntervalSec: Number(minIntervalSec)
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 10000 });
       console.log('✅ Setup completed successfully!');
       onComplete();
     } catch (error) {
@@ -275,6 +299,40 @@ const SetupModal = ({ onComplete }) => {
               Leave empty to use the default financial analysis prompt
             </div>
           </div>
+
+          {/* Tabs */}
+          <div className="border-b mb-4 flex gap-6">
+            <button type="button" className="pb-2 border-b-2 border-blue-600 text-blue-600 font-medium">AI</button>
+            <button type="button" className="pb-2 text-gray-500 hover:text-gray-700" onClick={() => window.dispatchEvent(new CustomEvent('openScrapingTab'))}>Scraping</button>
+          </div>
+
+          {/* Advanced AI Settings */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1">Tokens per Analysis</label>
+              <input type="number" min={32} value={analysisTokens}
+                onChange={e=>setAnalysisTokens(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg" />
+              <div className="text-xs text-gray-500 mt-1">Controls depth for news analysis</div>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1">Tokens for Chat/Test</label>
+              <input type="number" min={16} value={chatTokens}
+                onChange={e=>setChatTokens(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg" />
+              <div className="text-xs text-gray-500 mt-1">Used by model test and chat</div>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1">AI Analysis Interval (sec)</label>
+              <input type="number" min={1} value={minIntervalSec}
+                onChange={e=>setMinIntervalSec(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg" />
+              <div className="text-xs text-gray-500 mt-1">Minimum time between runs</div>
+            </div>
+          </div>
+
+          {/* Scraping Tab (inline simple panel) */}
+          <ScrapingPanel />
 
           {error && (
             <div className="flex items-center gap-2 text-red-600 text-sm p-3 bg-red-50 rounded-lg">

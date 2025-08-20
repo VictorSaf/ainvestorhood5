@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import axios from 'axios';
 import { Activity, Zap, TrendingUp, AlertCircle } from 'lucide-react';
 import ModernNewsCard from './ModernNewsCard';
 
@@ -10,6 +11,7 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [newArticleIds, setNewArticleIds] = useState(new Set());
   const [stats, setStats] = useState({ processed: 0, duplicates: 0, errors: 0 });
+  const [scraperLib, setScraperLib] = useState('');
   const feedRef = useRef(null);
 
   useEffect(() => {
@@ -66,6 +68,15 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
       }
     });
 
+    // Handle clear event
+    newSocket.on('articles-cleared', () => {
+      setArticles([]);
+      setStats({ processed: 0, duplicates: 0, errors: 0 });
+      if (feedRef.current) {
+        feedRef.current.scrollTo({ top: 0, behavior: 'instant' });
+      }
+    });
+
     // Handle article updates
     newSocket.on('article-updated', (data) => {
       console.log('🔄 Article updated:', data.article.title.substring(0, 50));
@@ -97,7 +108,29 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
       setArticles(data.articles);
     });
 
+    // React to scraper library changes
+    newSocket.on('scraper-lib-changed', async (data) => {
+      try {
+        const resp = await axios.get('http://localhost:8080/api/scraping/libs');
+        const libs = resp.data?.libs || [];
+        const active = libs.find(l => l.active);
+        setScraperLib(active?.name || active?.key || 'Unknown');
+      } catch {}
+    });
+
     setSocket(newSocket);
+
+    // Fetch current scraping library
+    (async () => {
+      try {
+        const resp = await axios.get('http://localhost:8080/api/scraping/libs');
+        const libs = resp.data?.libs || [];
+        const active = libs.find(l => l.active);
+        setScraperLib(active?.name || active?.key || 'Unknown');
+      } catch (e) {
+        setScraperLib('Unknown');
+      }
+    })();
 
     return () => {
       if (newSocket) {
@@ -113,9 +146,14 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
     }
   }, [initialNews, articles.length]);
 
-  const handleRefresh = () => {
-    if (socket) {
-      socket.emit('request-refresh');
+  const handleRefresh = async () => {
+    try {
+      setIsProcessing(true);
+      await axios.post('http://localhost:8080/api/collect-news');
+      // Live updates and sync will arrive via websocket when collection completes
+    } catch (e) {
+      console.error('Failed to trigger scrapping:', e?.response?.data?.error || e.message);
+      setIsProcessing(false);
     }
   };
 
@@ -136,6 +174,11 @@ const LiveFeed = ({ initialNews = [], hasApiKey }) => {
           <div className="flex items-center gap-3 flex-1">
             <Activity size={20} className="text-blue-600" />
             <h2 className="text-lg font-bold text-gray-900">Live Financial News</h2>
+            {scraperLib && (
+              <div className="ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                Scraper: {scraperLib}
+              </div>
+            )}
             <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${
               isConnected 
                 ? 'bg-emerald-100 text-emerald-700' 

@@ -6,7 +6,7 @@ import rehypeHighlight from 'rehype-highlight';
 import { io } from 'socket.io-client';
 import 'highlight.js/styles/github-dark.css';
 
-const AIDashboard = ({ onClose }) => {
+const AIDashboard = ({ onClose, inline = false }) => {
   const [aiConfig, setAiConfig] = useState(null);
   const [ollamaModels, setOllamaModels] = useState([]);
   const [modelDetails, setModelDetails] = useState(null);
@@ -232,11 +232,274 @@ const AIDashboard = ({ onClose }) => {
   };
 
   if (!aiConfig) {
-    return (
+    return inline ? (
+      <div className="w-full">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+        <p className="mt-2 text-gray-600 text-center">Loading AI configuration...</p>
+      </div>
+    ) : (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-6">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
           <p className="mt-2 text-gray-600">Loading AI configuration...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (inline) {
+    return (
+      <div className="w-full flex flex-col">
+        <div className="flex justify-between items-center pb-4 border-b border-gray-200">
+          <div className="flex items-center space-x-3">
+            {getModelIcon(aiConfig.aiProvider)}
+            <div>
+              <h2 className="text-xl font-bold text-gray-800">AI Dashboard</h2>
+              <p className="text-xs text-gray-600">
+                {aiConfig.aiProvider === 'ollama' ? 'Local Ollama Model' : 'OpenAI GPT-4'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex mt-4">
+          {/* Left Panel - Model Details & Settings */}
+          <div className="w-full lg:w-1/2 p-6 border-r border-gray-200">
+            {/* Model Information */}
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-4 mb-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-3">Model Information</h3>
+              
+              {aiConfig.aiProvider === 'ollama' ? (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-600">Provider</p>
+                      <p className="font-medium text-blue-600">Ollama (Local)</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-600">Model</p>
+                      <p className="font-medium">{aiConfig.ollamaModel}</p>
+                    </div>
+                  </div>
+                  
+                  {ollamaModels.length > 0 && (
+                    <div>
+                      <p className="text-sm text-gray-600">Available Models</p>
+                      <div className="mt-1 space-y-1">
+                        {ollamaModels.map((model, index) => (
+                          <div key={index} className="text-sm bg-white rounded px-2 py-1 flex justify-between">
+                            <span className="font-medium">{model.name}</span>
+                            <span className="text-gray-500">{formatBytes(model.size)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-600">Provider</p>
+                      <p className="font-medium text-green-600">OpenAI</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-600">Model</p>
+                      <p className="font-medium">GPT-4</p>
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">API Key Status</p>
+                    <p className="font-medium text-green-600">
+                      {aiConfig.hasOpenAIKey ? 'Configured ✓' : 'Not configured ✗'}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Agent Settings */}
+            <div className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg p-4 mb-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-3">Agent Settings</h3>
+              
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm text-gray-600">Custom Prompt</p>
+                  <div className="mt-1 bg-white rounded border p-2 max-h-32 overflow-y-auto">
+                    <p className="text-sm text-gray-800">
+                      {aiConfig.customPrompt || 'Using default financial analysis prompt'}
+                    </p>
+                  </div>
+                </div>
+                
+                {modelMetrics && (
+                  <div className="grid grid-cols-2 gap-4 mt-4">
+                    <div>
+                      <p className="text-sm text-gray-600">Total Requests</p>
+                      <p className="text-lg font-bold text-purple-600">{modelMetrics.totalRequests}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-600">Avg Response Time</p>
+                      <p className="text-lg font-bold text-purple-600">{modelMetrics.avgResponseTime}ms</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Model Test */}
+            <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg p-4">
+              <h3 className="text-lg font-semibold text-gray-800 mb-3">Model Test</h3>
+              
+              <button
+                onClick={testModel}
+                disabled={isLoading}
+                className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white px-4 py-2 rounded-lg transition-colors mb-3"
+              >
+                {isLoading ? 'Testing...' : 'Test Model'}
+              </button>
+
+              {testResult && (
+                <div className={`p-3 rounded-lg ${testResult.success ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                  <p className={`text-sm font-medium ${testResult.success ? 'text-green-800' : 'text-red-800'}`}>
+                    {testResult.success ? 'Model Test Successful ✓' : 'Model Test Failed ✗'}
+                  </p>
+                  {testResult.response && (
+                    <p className="text-sm text-gray-700 mt-1">{testResult.response}</p>
+                  )}
+                  {testResult.error && (
+                    <p className="text-sm text-red-700 mt-1">{testResult.error}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right Panel - Chat Interface */}
+          <div className="w-full lg:w-1/2 flex flex-col">
+            {/* Chat Header */}
+            <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-800">Agent Chat Test</h3>
+              <button
+                onClick={clearChat}
+                className="text-gray-500 hover:text-gray-700 text-sm"
+              >
+                Clear Chat
+              </button>
+            </div>
+
+            {/* Chat Messages */}
+            <div className="p-4 space-y-4">
+              {chatMessages.length === 0 ? (
+                <div className="text-center text-gray-500 mt-8">
+                  <svg className="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                  </svg>
+                  <p>Start a conversation to test the AI agent</p>
+                </div>
+              ) : (
+                chatMessages.map((message, index) => (
+                  <div key={index} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
+                      message.role === 'user' 
+                        ? 'bg-blue-600 text-white' 
+                        : message.isError 
+                          ? 'bg-red-100 text-red-800 border border-red-300'
+                          : 'bg-gray-100 text-gray-800'
+                    }`}>
+                      {message.role === 'assistant' && !message.isError ? (
+                        <div className="text-sm prose prose-sm max-w-none">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            rehypePlugins={[rehypeHighlight]}
+                            components={{
+                              code: ({node, inline, className, children, ...props}) => {
+                                if (inline) {
+                                  return <code className="bg-gray-200 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>
+                                }
+                                return (
+                                  <pre className="bg-gray-800 text-gray-100 p-3 rounded-lg overflow-x-auto">
+                                    <code className={className} {...props}>
+                                      {children}
+                                    </code>
+                                  </pre>
+                                )
+                              },
+                              blockquote: ({children}) => (
+                                <blockquote className="border-l-4 border-gray-300 pl-4 italic text-gray-600">
+                                  {children}
+                                </blockquote>
+                              ),
+                              h1: ({children}) => <h1 className="text-lg font-bold mb-2">{children}</h1>,
+                              h2: ({children}) => <h2 className="text-base font-bold mb-2">{children}</h2>,
+                              h3: ({children}) => <h3 className="text-sm font-bold mb-1">{children}</h3>,
+                              ul: ({children}) => <ul className="list-disc list-inside space-y-1">{children}</ul>,
+                              ol: ({children}) => <ol className="list-decimal list-inside space-y-1">{children}</ol>,
+                              li: ({children}) => <li className="text-sm">{children}</li>,
+                              p: ({children}) => <p className="mb-2 last:mb-0">{children}</p>,
+                              strong: ({children}) => <strong className="font-semibold">{children}</strong>,
+                              em: ({children}) => <em className="italic">{children}</em>
+                            }}
+                          >
+                            {message.content}
+                          </ReactMarkdown>
+                          {message.streaming && (
+                            <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-1"></span>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm">{message.content}</p>
+                      )}
+                      <div className="flex justify-between items-center mt-1 text-xs opacity-75">
+                        <span>{message.timestamp.toLocaleTimeString()}</span>
+                        {message.processingTime && (
+                          <span>{message.processingTime}ms</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+              
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-gray-100 rounded-lg px-4 py-2">
+                    <div className="flex space-x-1">
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Chat Input */}
+            <div className="p-4 border-t border-gray-200 bg-white">
+              <div className="flex space-x-2">
+                <input
+                  type="text"
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
+                  placeholder="Type your message to test the AI agent..."
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={isLoading}
+                />
+                <button
+                  onClick={sendChatMessage}
+                  disabled={isLoading || !inputMessage.trim()}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );

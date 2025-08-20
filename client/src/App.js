@@ -8,16 +8,20 @@ import LoadingSpinner from './components/LoadingSpinner';
 import MonitoringDashboard from './components/MonitoringDashboard';
 import AIDashboard from './components/AIDashboard';
 import LiveFeed from './components/LiveFeed';
+import LiveDebugOverlay from './components/LiveDebugOverlay';
 import axios from 'axios';
+import SettingsTabs from './components/SettingsTabs';
 
 function App() {
   const [news, setNews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showSetup, setShowSetup] = useState(false);
+  const [showSettingsTabs, setShowSettingsTabs] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
   const [stats, setStats] = useState(null);
   const [showMonitoring, setShowMonitoring] = useState(false);
   const [showAIDashboard, setShowAIDashboard] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const [socket, setSocket] = useState(null);
 
   useEffect(() => {
@@ -58,7 +62,7 @@ function App() {
       const response = await axios.get('http://localhost:8080/api/setup-status');
       const hasKey = response.data.hasApiKey;
       setHasApiKey(hasKey);
-      setShowSetup(!hasKey);
+      setShowSetup(false);
       if (!hasKey) {
         setLoading(false);
       }
@@ -99,12 +103,21 @@ function App() {
   const triggerNewsCollection = async () => {
     try {
       await axios.post('http://localhost:8080/api/collect-news');
-      setTimeout(() => {
-        loadNews();
-        loadStats();
-      }, 2000);
     } catch (error) {
       console.error('Error triggering news collection:', error);
+    }
+  };
+
+  const resetAndRescrape = async () => {
+    try {
+      if (!window.confirm('Delete all articles and start a fresh scraping run?')) return;
+      // Optimistically clear feed immediately
+      setNews([]);
+      await axios.post('http://localhost:8080/api/news/reset');
+      // rely on websocket/live updates; also refresh list after a short delay
+      setTimeout(() => { loadNews(); loadStats(); }, 2000);
+    } catch (error) {
+      console.error('Error resetting news:', error);
     }
   };
 
@@ -117,9 +130,9 @@ function App() {
       <Header 
         stats={stats} 
         onRefresh={triggerNewsCollection}
-        onSettings={() => setShowSetup(true)}
         onMonitoring={() => setShowMonitoring(true)}
-        onAIDashboard={() => setShowAIDashboard(true)}
+        onReset={resetAndRescrape}
+        onOpenDebug={() => setShowDebug(true)}
       />
       
       <main className="flex-1 pt-16">
@@ -130,8 +143,8 @@ function App() {
       </main>
       
       {showMonitoring && (
-        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="w-full h-full">
+        <div className="fixed inset-0 z-50 bg-white overflow-y-auto">
+          <div className="min-h-screen">
             <MonitoringDashboard onClose={() => setShowMonitoring(false)} />
           </div>
         </div>
@@ -139,6 +152,14 @@ function App() {
 
       {showAIDashboard && (
         <AIDashboard onClose={() => setShowAIDashboard(false)} />
+      )}
+
+      {showSettingsTabs && (
+        <SettingsTabs onClose={() => setShowSettingsTabs(false)} />
+      )}
+
+      {showDebug && (
+        <LiveDebugOverlay open={showDebug} onClose={()=>setShowDebug(false)} />
       )}
     </div>
   );

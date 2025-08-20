@@ -39,6 +39,61 @@ const ModernNewsCard = ({ article, index, isNew = false }) => {
     return { level: 'Low', color: 'text-red-600', bg: 'bg-red-500' };
   };
 
+  const buildYahooFinanceUrl = (type, name) => {
+    if (!type || !name) return null;
+    const t = String(type).toLowerCase();
+    const raw = String(name).trim();
+    const commodityMap = {
+      gold: 'GC=F', silver: 'SI=F', oil: 'CL=F', wti: 'CL=F', brent: 'BZ=F',
+      copper: 'HG=F', 'natural gas': 'NG=F', gas: 'NG=F', corn: 'ZC=F', wheat: 'ZW=F', soy: 'ZS=F', soybeans: 'ZS=F'
+    };
+    const indexMap = [
+      { re: /(s&p|sp-?500)/i, sym: '^GSPC' },
+      { re: /nasdaq\s*100/i, sym: '^NDX' },
+      { re: /nasdaq|nasdaq\s*composite/i, sym: '^IXIC' },
+      { re: /dow|dow\s*jones/i, sym: '^DJI' },
+      { re: /dax/i, sym: '^GDAXI' },
+      { re: /ftse\s*100|ftse/i, sym: '^FTSE' },
+      { re: /nikkei|225/i, sym: '^N225' },
+      { re: /cac|40/i, sym: '^FCHI' },
+      { re: /hang\s*seng|hsi/i, sym: '^HSI' },
+      { re: /tsx|s&p\s*tsx/i, sym: '^GSPTSE' }
+    ];
+    if (t === 'stocks') {
+      const ticker = raw.split(':').pop().replace(/[^A-Za-z]/g, '').toUpperCase();
+      if (!ticker) return null;
+      return `https://finance.yahoo.com/quote/${ticker}`;
+    }
+    if (t === 'forex') {
+      const pair = raw.replace(/\s|\//g, '').toUpperCase();
+      if (!pair || pair.length < 6) return null;
+      return `https://finance.yahoo.com/quote/${pair}=X`;
+    }
+    if (t === 'crypto') {
+      const sym = raw.replace(/[^A-Za-z]/g, '').toUpperCase();
+      if (!sym) return null;
+      return `https://finance.yahoo.com/quote/${sym}-USD`;
+    }
+    if (t === 'commodities') {
+      const key = raw.toLowerCase();
+      const sym = commodityMap[key] || commodityMap[key.replace(/\s+/g, ' ')];
+      return `https://finance.yahoo.com/quote/${sym || 'CL=F'}`;
+    }
+    if (t === 'indices') {
+      for (const m of indexMap) {
+        if (m.re.test(raw)) return `https://finance.yahoo.com/quote/${m.sym}`;
+      }
+      return `https://finance.yahoo.com/quote/%5EGSPC`;
+    }
+    return `https://finance.yahoo.com/lookup?s=${encodeURIComponent(raw)}`;
+  };
+
+  const openGoogleSearch = (e) => {
+    e.preventDefault();
+    const q = encodeURIComponent(`${article.instrument_name || ''} ${article.instrument_type || ''}`.trim() || article.title);
+    window.open(`https://www.google.com/search?q=${q}`, '_blank', 'noopener,noreferrer');
+  };
+
   const formatExactTime = (dateString) => {
     if (!dateString) return 'Unknown';
     
@@ -94,7 +149,22 @@ const ModernNewsCard = ({ article, index, isNew = false }) => {
               </span>
               {article.instrument_name && (
                 <span className="text-sm font-medium text-gray-700">
-                  {article.instrument_name}
+                  <a
+                    className="text-blue-600 underline decoration-dotted hover:decoration-solid"
+                    href="#"
+                    title="Search on Google"
+                    onClick={openGoogleSearch}
+                  >
+                    {article.instrument_name}
+                  </a>
+                  <a
+                    className="inline-flex items-center ml-1 text-gray-400 hover:text-gray-700"
+                    href="#"
+                    onClick={openGoogleSearch}
+                    aria-label="Search on Google"
+                  >
+                    <ExternalLink size={12} />
+                  </a>
                 </span>
               )}
             </div>
@@ -103,7 +173,7 @@ const ModernNewsCard = ({ article, index, isNew = false }) => {
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 px-2 py-1 bg-gray-100 rounded-full text-xs text-gray-600">
               <Clock size={10} />
-              <span title={`Salvat în DB: ${article.created_at}`}>{formatExactTime(article.created_at)}</span>
+              <span title={`Published at: ${article.published_at || 'Unknown'}`}>{formatExactTime(article.published_at)}</span>
             </div>
             
             {article.source_url && (
