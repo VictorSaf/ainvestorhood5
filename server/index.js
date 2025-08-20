@@ -697,10 +697,14 @@ app.post('/api/scraping/test', async (req, res) => {
         'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
         'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
         'https://feeds.finance.yahoo.com/rss/2.0/headline',
+        // Additional general business/markets
+        'https://www.cnbc.com/id/10000664/device/rss/rss.html',
+        'https://www.cnbc.com/id/100003114/device/rss/rss.html',
         'https://www.zacks.com/stock/research/feed',
         'https://www.fool.com/a/feeds/foolwatch.xml',
         'https://www.coindesk.com/arc/outboundfeeds/rss/',
         'https://cointelegraph.com/rss',
+        'https://decrypt.co/feed',
         'https://www.theblock.co/rss',
         'https://www.dailyfx.com/feeds/market-news',
         'https://www.fxstreet.com/rss',
@@ -709,7 +713,17 @@ app.post('/api/scraping/test', async (req, res) => {
         'https://www.wsj.com/xml/rss/3_7031.xml',
         'https://www.economist.com/finance-and-economics/rss.xml',
         'https://www.semianalysis.com/feed',
-        'https://www.techmeme.com/feed.xml'
+        'https://www.techmeme.com/feed.xml',
+        // Macro/policy institutions
+        'https://www.federalreserve.gov/feeds/press_all.xml',
+        'https://www.ecb.europa.eu/press/pressconf/html/index.en.rss',
+        'https://www.imf.org/external/np/speeches/rss.aspx',
+        'https://home.treasury.gov/news/press-releases/rss',
+        'https://www.bis.org/pressreleases_rss.xml',
+        'https://www.bea.gov/news/rss.xml',
+        'https://www.bls.gov/feeds/news_release.rss',
+        // ETFs / funds
+        'https://www.etftrends.com/feed/'
       ];
       const scrapyFeeds = [
         'https://feeds.finance.yahoo.com/rss/2.0/headline',
@@ -721,7 +735,15 @@ app.post('/api/scraping/test', async (req, res) => {
         'https://www.investing.com/rss/news.rss',
         'https://seekingalpha.com/market_currents.xml',
         'https://www.zerohedge.com/fullrss2.xml',
-        'https://feeds.feedburner.com/TheMotleyFool'
+        'https://feeds.feedburner.com/TheMotleyFool',
+        // Extra solid RSS endpoints for Scrapy
+        'https://www.wsj.com/xml/rss/3_7031.xml',
+        'https://www.fxstreet.com/rss',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+        'https://cointelegraph.com/rss',
+        'https://decrypt.co/feed',
+        'https://www.oilprice.com/rss/main.xml',
+        'https://www.kitco.com/rss/feed.xml'
       ];
       let extra = [];
       try { const raw = await db.getSetting('rss_sources_extra'); if (raw) extra = JSON.parse(raw); } catch {}
