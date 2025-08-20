@@ -692,6 +692,7 @@ app.post('/api/scraping/test', async (req, res) => {
         'https://feeds.feedburner.com/TheMotleyFool',
         'https://www.investing.com/rss/news.rss',
         'https://www.marketwatch.com/feeds/topstories',
+        'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
         'https://www.ft.com/rss/home/us',
         'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
         'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
@@ -728,6 +729,7 @@ app.post('/api/scraping/test', async (req, res) => {
       const scrapyFeeds = [
         'https://feeds.finance.yahoo.com/rss/2.0/headline',
         'https://www.marketwatch.com/rss/topstories',
+        'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
         'https://www.cnbc.com/id/100003114/device/rss/rss.html',
         'https://www.reuters.com/business/finance/rss',
         'https://www.ft.com/rss/home',
@@ -1024,6 +1026,7 @@ app.get('/api/scraping/test/stream', async (req, res) => {
       'https://seekingalpha.com/feed.xml',
       'https://feeds.feedburner.com/TheMotleyFool',
       'https://www.investing.com/rss/news.rss',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
       'https://www.marketwatch.com/feeds/topstories',
       'https://www.ft.com/rss/home/us',
       'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
@@ -1047,6 +1050,7 @@ app.get('/api/scraping/test/stream', async (req, res) => {
     const scrapyFeeds = [
       'https://feeds.finance.yahoo.com/rss/2.0/headline',
       'https://www.marketwatch.com/rss/topstories',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
       'https://www.cnbc.com/id/100003114/device/rss/rss.html',
       'https://www.reuters.com/business/finance/rss',
       'https://www.ft.com/rss/home',
@@ -1260,6 +1264,7 @@ app.get('/api/scraping/sources', async (req, res) => {
       'https://seekingalpha.com/feed.xml',
       'https://feeds.feedburner.com/TheMotleyFool',
       'https://www.investing.com/rss/news.rss',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
       'https://www.marketwatch.com/feeds/topstories',
       'https://www.ft.com/rss/home/us',
       'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
@@ -1285,6 +1290,7 @@ app.get('/api/scraping/sources', async (req, res) => {
     const scrapyFeeds = [
       'https://feeds.finance.yahoo.com/rss/2.0/headline',
       'https://www.marketwatch.com/rss/topstories',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en',
       'https://www.cnbc.com/id/100003114/device/rss/rss.html',
       'https://www.reuters.com/business/finance/rss',
       'https://www.ft.com/rss/home',
