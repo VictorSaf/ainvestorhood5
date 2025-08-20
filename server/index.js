@@ -37,6 +37,9 @@ const io = new Server(server, {
 // Initialize database and scheduler
 const db = new Database();
 const scheduler = new NewsScheduler();
+const browserPool = require('./browserService');
+const { spawn } = require('child_process');
+const FeedParser = require('feedparser');
 
 // Setup monitoring for services
 setupDatabaseMonitoring(db);
@@ -49,6 +52,7 @@ liveStream.init(io);
 
 // Start real-time monitoring
 realTimeMonitor.start();
+browserPool.init().catch(()=>{});
 
 // Setup process and system monitoring
 setupProcessMonitoring();
@@ -126,6 +130,33 @@ if (true) {
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 // API Routes
+// Quick parse an RSS/Atom URL using feedparser (debug/utility for System / Scrapping)
+app.post('/api/scraping/parse-feed', async (req, res) => {
+  try {
+    const { url } = req.body || {};
+    if (!url) return res.status(400).json({ success: false, error: 'url required' });
+    const axios = require('axios');
+    const r = await axios.get(url, { responseType: 'stream', timeout: 10000, headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/rss+xml,application/xml;q=0.9,text/html;q=0.8,*/*;q=0.7'
+    }});
+    const feedparser = new FeedParser();
+    const items = [];
+    await new Promise((resolve, reject) => {
+      r.data.pipe(feedparser);
+      feedparser.on('error', reject);
+      feedparser.on('readable', function() {
+        let item; while (item = this.read()) {
+          items.push({ title: item.title, link: item.link, pubDate: item.pubDate });
+        }
+      });
+      feedparser.on('end', resolve);
+    });
+    res.json({ success: true, count: items.length, items: items.slice(0, 50) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 // Get AI runtime settings (tokens, intervals)
 app.get('/api/ai-settings', async (req, res) => {
   try {
@@ -551,9 +582,16 @@ app.get('/api/scraping/libs', async (req, res) => {
     const scrappingInterval = parseInt(await db.getSetting('scrapping_interval_sec')) || 30;
     const libs = [
       { key: 'scrapy', name: 'Python Scrapy', intervalSec: scrappingInterval, active: activeLib === 'scrapy' },
-      { key: 'bs4', name: 'BeautifulSoup + Requests', intervalSec: null, active: activeLib === 'bs4' },
-      { key: 'playwright', name: 'Playwright (Python)', intervalSec: null, active: activeLib === 'playwright' },
-      { key: 'trafilatura', name: 'Trafilatura', intervalSec: null, active: activeLib === 'trafilatura' }
+      { key: 'selenium', name: 'Selenium (Chromium)', intervalSec: null, active: activeLib === 'selenium' },
+      { key: 'bs4', name: 'Requests + BeautifulSoup', intervalSec: null, active: activeLib === 'bs4' },
+      { key: 'playwright', name: 'Playwright (Chromium)', intervalSec: null, active: activeLib === 'playwright' },
+      { key: 'feedparser', name: 'Feedparser (RSS/Atom)', intervalSec: null, active: activeLib === 'feedparser' },
+      { key: 'feedsearch', name: 'Feedsearch (discover feeds)', intervalSec: null, active: activeLib === 'feedsearch' },
+      { key: 'pygooglenews', name: 'PyGoogleNews (Google News RSS)', intervalSec: null, active: activeLib === 'pygooglenews' },
+      { key: 'newscatcher', name: 'NewsCatcher', intervalSec: null, active: activeLib === 'newscatcher' },
+      { key: 'newspaper3k', name: 'Newspaper3k (article extract)', intervalSec: null, active: activeLib === 'newspaper3k' },
+      { key: 'trafilatura', name: 'Trafilatura', intervalSec: null, active: activeLib === 'trafilatura' },
+      { key: 'investpy', name: 'Investpy (economic calendar)', intervalSec: null, active: activeLib === 'investpy' }
     ];
     res.json({ libs });
   } catch (e) {
@@ -608,46 +646,355 @@ app.post('/api/scraping/test', async (req, res) => {
       ];
       let extra = [];
       try { const raw = await db.getSetting('rss_sources_extra'); if (raw) extra = JSON.parse(raw); } catch {}
+      // Apply blacklist so tests reflect the same set as the UI list
+      let blacklist = [];
+      try { const rawBl = await db.getSetting('rss_sources_blacklist'); if (rawBl) blacklist = JSON.parse(rawBl); } catch {}
+      const isAllowed = (u) => !blacklist.includes(u);
       const mergeUnique = (arr1, arr2) => Array.from(new Set([...(arr1||[]), ...(arr2||[])]));
-      return { ai: mergeUnique(aiServiceFeeds, extra), scrapy: mergeUnique(scrapyFeeds, extra) };
+      return {
+        ai: mergeUnique(aiServiceFeeds, extra).filter(isAllowed),
+        scrapy: mergeUnique(scrapyFeeds, extra).filter(isAllowed)
+      };
     };
     const probeSources = async (urls) => {
       const axios = require('axios');
+      const baseHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml,application/xml;q=0.9,text/html;q=0.8,*/*;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
+        'Referer': 'https://www.google.com/',
+        'Connection': 'keep-alive'
+      };
       const tests = urls.map(async (u) => {
         const t0 = Date.now();
         try {
-          const r = await axios.get(u, { timeout: 5000, maxRedirects: 3, validateStatus: ()=>true });
+          const r = await axios.get(u, { timeout: 7000, maxRedirects: 3, validateStatus: ()=>true, headers: baseHeaders });
           const ok = r.status >= 200 && r.status < 400;
-          return { url: u, ok, status: r.status, durationMs: Date.now()-t0 };
+          return {
+            url: u,
+            ok,
+            status: r.status,
+            headers: r.headers && typeof r.headers === 'object' ? { 'content-type': r.headers['content-type'] } : undefined,
+            durationMs: Date.now()-t0
+          };
         } catch (e) {
-          return { url: u, ok: false, error: e.code || e.message, durationMs: Date.now()-t0 };
+          // Chromium fallback
+          try {
+            const cr = await browserPool.fetch(u);
+            return { url: u, ok: cr.ok, status: cr.status, fixed_by: 'chromium', durationMs: Date.now()-t0 };
+          } catch {}
+          return {
+            url: u,
+            ok: false,
+            error: e.code || e.message,
+            status: e.response && e.response.status,
+            reason: e.name,
+            message: e.message,
+            stack: e.stack,
+            durationMs: Date.now()-t0
+          };
         }
       });
       return Promise.all(tests);
     };
 
-    const realTimeMonitor = require('./realTimeMonitor');
+    // Helpers for specific libraries
+    const parseWithFeedparser = async (urls) => {
+      const axios = require('axios');
+      const results = [];
+      for (const url of urls) {
+        const t0 = Date.now();
+        try {
+          const resp = await axios.get(url, { responseType: 'stream', timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/rss+xml,application/xml;q=0.9,*/*;q=0.8' } });
+          const fp = new FeedParser();
+          const items = [];
+          await new Promise((resolve, reject) => {
+            resp.data.pipe(fp);
+            fp.on('error', reject);
+            fp.on('readable', function() { let item; while (item = this.read()) { items.push(item); if (items.length >= 50) break; } });
+            fp.on('end', resolve);
+          });
+          results.push({ url, ok: items.length > 0, status: 200, durationMs: Date.now()-t0, items: items.length });
+        } catch (e) {
+          results.push({ url, ok: false, error: e.message, durationMs: Date.now()-t0 });
+        }
+      }
+      return results;
+    };
+
+    const discoverFeeds = async (roots) => {
+      const axios = require('axios');
+      const cheerio = require('cheerio');
+      const results = [];
+      for (const root of roots) {
+        const t0 = Date.now();
+        try {
+          const resp = await axios.get(root, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+          const $ = cheerio.load(resp.data);
+          const links = new Set();
+          $('link').each((_, el) => {
+            const type = ($(el).attr('type')||'').toLowerCase();
+            const href = $(el).attr('href');
+            if ((type.includes('rss') || type.includes('xml') || /rss|feed|xml/i.test(href||'')) && href) {
+              try { links.add(new URL(href, root).toString()); } catch {}
+            }
+          });
+          $('a[href]').each((_, el) => {
+            const href = $(el).attr('href');
+            if (/rss|feed|xml/i.test(href||'')) { try { links.add(new URL(href, root).toString()); } catch {} }
+          });
+          results.push({ url: root, ok: links.size > 0, status: 200, durationMs: Date.now()-t0, discovered: Array.from(links).slice(0, 10) });
+        } catch (e) {
+          results.push({ url: root, ok: false, error: e.message, durationMs: Date.now()-t0 });
+        }
+      }
+      return results;
+    };
+
     // Determine which sources to probe
     const { ai, scrapy } = await buildSources();
     const selected = key === 'scrapy' ? scrapy : ai;
-    const bySource = await probeSources(selected);
-    realTimeMonitor.onScrapingStart(key);
+    let bySource = [];
+    if (key === 'selenium') {
+      // Use enhanced Selenium collector to process ALL selected sources and count ALL items
+      const { spawn } = require('child_process');
+      const py = spawn('/app/scrapy_news_collector/venv/bin/python3', ['-u', '/app/scrapy_news_collector/selenium_collector.py'], {
+        env: { ...process.env, SELENIUM_SOURCES_JSON: JSON.stringify(selected), CHR_NAV_TIMEOUT_MS: String(parseInt(process.env.CHR_NAV_TIMEOUT_MS || '12000')) }
+      });
+      let out = '';
+      let err = '';
+      const done = new Promise((resolve) => {
+        py.stdout.on('data', (d) => { out += d.toString(); });
+        py.stderr.on('data', (d) => { err += d.toString(); });
+        py.on('close', () => resolve());
+      });
+      // Safety timeout (40s for full sweep)
+      await Promise.race([
+        done,
+        new Promise((resolve) => setTimeout(() => { try { py.kill('SIGTERM'); } catch {} resolve(); }, 40000))
+      ]);
+      try {
+        const parsed = JSON.parse(out || '{}');
+        const results = Array.isArray(parsed.results) ? parsed.results : [];
+        bySource = results.map(r => ({ url: r.source, ok: !!r.ok, status: r.ok ? 200 : 0, durationMs: r.durationMs, error: r.error, items: Array.isArray(r.items) ? r.items.length : 0 }));
+        // Aggregate total items as articles
+        articles = results.reduce((sum, r) => sum + (Array.isArray(r.items) ? r.items.length : 0), 0);
+      } catch {
+        bySource = [];
+      }
+    } else if (key === 'feedparser') {
+      bySource = await parseWithFeedparser(selected.slice(0, 12));
+      articles = bySource.filter(s=>s.ok).reduce((sum, s)=> sum + (s.items||0), 0);
+    } else if (key === 'feedsearch') {
+      const roots = ['https://finance.yahoo.com','https://www.marketwatch.com','https://www.reuters.com','https://www.ft.com'];
+      bySource = await discoverFeeds(roots);
+      // Count discovered feeds as articles estimation
+      articles = bySource.reduce((sum, r)=> sum + ((r.discovered||[]).length), 0);
+    } else if (key === 'pygooglenews') {
+      const queries = [
+        'stock market', 'forex', 'crypto', 'commodities',
+      ];
+      const urls = queries.map(q => `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`);
+      bySource = await parseWithFeedparser(urls);
+      articles = bySource.filter(s=>s.ok).reduce((sum, s)=> sum + (s.items||0), 0);
+    } else if (key === 'newscatcher') {
+      // Placeholder without API key: use Google News Business as free alternative
+      const urls = ['https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en'];
+      bySource = await parseWithFeedparser(urls);
+      articles = bySource.filter(s=>s.ok).reduce((sum, s)=> sum + (s.items||0), 0);
+    } else if (key === 'newspaper3k') {
+      // Fetch first item from a few feeds and measure content length via Chromium (as proxy for extraction)
+      const axios = require('axios');
+      const feeds = selected.slice(0, 4);
+      const tests = [];
+      for (const f of feeds) {
+        const t0 = Date.now();
+        try {
+          const parsed = await parseWithFeedparser([f]);
+          const firstUrl = (parsed[0] && parsed[0].ok && parsed[0].items) ? null : null;
+          let articleUrl = null;
+          try {
+            const resp = await axios.get(f, { timeout: 8000 });
+            const m = String(resp.data).match(/<link>(.*?)<\/link>/i);
+            if (m && m[1]) articleUrl = m[1];
+          } catch {}
+          if (!articleUrl) { tests.push({ url: f, ok: false, error: 'no-article', durationMs: Date.now()-t0 }); continue; }
+          const cr = await browserPool.fetch(articleUrl);
+          tests.push({ url: articleUrl, ok: !!cr.ok, status: cr.status, durationMs: Date.now()-t0 });
+        } catch (e) {
+          tests.push({ url: f, ok: false, error: e.message, durationMs: Date.now()-t0 });
+        }
+      }
+      bySource = tests;
+      articles = bySource.filter(s=>s.ok).length;
+    } else if (key === 'bs4') {
+      // Basic HTML fetch + cheerio parse title
+      const axios = require('axios');
+      const cheerio = require('cheerio');
+      const roots = selected.slice(0, 8).map(u=> new URL(u).origin);
+      bySource = await Promise.all(roots.map(async (u)=>{
+        const t0 = Date.now();
+        try { const r = await axios.get(u, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' }}); const $ = cheerio.load(r.data); const title = $('title').text().trim(); return { url: u, ok: !!title, status: r.status, durationMs: Date.now()-t0 } } catch(e) { return { url: u, ok:false, error:e.message, durationMs: Date.now()-t0 }; }
+      }));
+      articles = bySource.filter(s=>s.ok).length;
+    } else if (key === 'investpy') {
+      // Not enabled in this image: return informative status
+      bySource = [{ url: 'economic_calendar', ok: false, error: 'Investpy not available in current build', status: 0, durationMs: 1 }];
+      articles = 0;
+    } else if (key === 'playwright') {
+      // Use Node Chromium fetch as Playwright proxy
+      bySource = await Promise.all(selected.slice(0, 6).map(async (u)=>{
+        const t0 = Date.now();
+        try { const r = await browserPool.fetch(u); return { url: u, ok: r.ok, status: r.status, durationMs: Date.now()-t0 } } catch(e){ return { url: u, ok:false, error:e.message, durationMs: Date.now()-t0 }; }
+      }));
+      articles = bySource.filter(s=>s.ok).length;
+    } else {
+      bySource = await probeSources(selected);
+    }
     try {
       if (key === 'scrapy') {
-        const result = await scheduler.scrapyService.runScraper();
-        articles = result.articlesProcessed || 0;
-      } else {
-        // Simulated aggregate based on successful probes
+        // Kick off a real scrape in background so UI is responsive
+        setImmediate(async () => {
+          try { await scheduler.scrapyService.runScraper(); } catch (e) { console.error('scrapy test background run failed:', e.message); }
+        });
+        // Quick estimate based on reachable sources
+        articles = bySource.filter(s=>s.ok).length;
+      } else if (key !== 'selenium') {
+        // Simulated aggregate based on successful probes (non-selenium)
         articles = bySource.filter(s=>s.ok).length;
       }
-      realTimeMonitor.onScrapingEnd(articles, bySource.filter(s=>!s.ok).length, key);
-    } catch (e) {
-      realTimeMonitor.onScrapingEnd(0, bySource.filter(s=>!s.ok).length+1, key);
-    }
+    } catch (e) { /* ignore, response will still include bySource */ }
     const durationMs = Date.now() - start;
     res.json({ success: true, library, articles, durationMs, bySource });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Experimental: Trigger Selenium-based browse of sources to extract feeds and page content hints
+app.post('/api/scraping/selenium/browse', async (req, res) => {
+  try {
+    const { urls, timeoutMs } = req.body || {};
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ success: false, error: 'urls[] required' });
+    }
+    const py = spawn('/app/scrapy_news_collector/venv/bin/python', ['-u', '/app/scrapy_news_collector/selenium_fetcher.py'], {
+      env: { ...process.env, SELENIUM_SOURCES_JSON: JSON.stringify(urls), CHR_NAV_TIMEOUT_MS: String(timeoutMs || 12000) }
+    });
+    let out = '';
+    let err = '';
+    py.stdout.on('data', (d) => { out += d.toString(); });
+    py.stderr.on('data', (d) => { err += d.toString(); });
+    py.on('close', (code) => {
+      try {
+        const parsed = JSON.parse(out || '{}');
+        return res.json({ success: true, code, ...parsed, stderr: err.trim() || undefined });
+      } catch (e) {
+        return res.json({ success: false, error: e.message, raw: out, stderr: err.trim() || undefined });
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Streaming per-source test results via Server-Sent Events (SSE)
+app.get('/api/scraping/test/stream', async (req, res) => {
+  try {
+    const key = (req.query && req.query.key) || 'scrapy';
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders && res.flushHeaders();
+
+    const axios = require('axios');
+    const baseHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/rss+xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Referer': 'https://www.google.com/',
+      'Connection': 'keep-alive'
+    };
+    // Build sources (duplicated logic kept local for isolation)
+    const aiServiceFeeds = [
+      'https://feeds.feedburner.com/zerohedge/feed',
+      'https://seekingalpha.com/feed.xml',
+      'https://feeds.feedburner.com/TheMotleyFool',
+      'https://www.investing.com/rss/news.rss',
+      'https://www.marketwatch.com/feeds/topstories',
+      'https://www.ft.com/rss/home/us',
+      'https://www.bloomberg.com/feeds/podcast/etf_report.xml',
+      'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
+      'https://www.nasdaq.com/feed/rssoutbound?category=US%20Markets',
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      'https://www.zacks.com/stock/research/feed',
+      'https://www.fool.com/a/feeds/foolwatch.xml',
+      'https://www.coindesk.com/arc/outboundfeeds/rss/',
+      'https://cointelegraph.com/rss',
+      'https://www.theblock.co/rss',
+      'https://www.dailyfx.com/feeds/market-news',
+      'https://www.fxstreet.com/rss',
+      'https://www.oilprice.com/rss/main.xml',
+      'https://www.kitco.com/rss/feed.xml',
+      'https://www.wsj.com/xml/rss/3_7031.xml',
+      'https://www.economist.com/finance-and-economics/rss.xml',
+      'https://www.semianalysis.com/feed',
+      'https://www.techmeme.com/feed.xml'
+    ];
+    const scrapyFeeds = [
+      'https://feeds.finance.yahoo.com/rss/2.0/headline',
+      'https://www.marketwatch.com/rss/topstories',
+      'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+      'https://www.reuters.com/business/finance/rss',
+      'https://www.ft.com/rss/home',
+      'https://www.bloomberg.com/politics/feeds/site.xml',
+      'https://www.investing.com/rss/news.rss',
+      'https://seekingalpha.com/market_currents.xml',
+      'https://www.zerohedge.com/fullrss2.xml',
+      'https://feeds.feedburner.com/TheMotleyFool'
+    ];
+    let extra = [];
+    try { const raw = await db.getSetting('rss_sources_extra'); if (raw) extra = JSON.parse(raw); } catch {}
+    // Apply blacklist so streaming test matches the UI list
+    let blacklist = [];
+    try { const rawBl = await db.getSetting('rss_sources_blacklist'); if (rawBl) blacklist = JSON.parse(rawBl); } catch {}
+    const isAllowed = (u) => !blacklist.includes(u);
+    const mergeUnique = (arr1, arr2) => Array.from(new Set([...(arr1||[]), ...(arr2||[])]));
+    const selected = (key === 'scrapy' ? mergeUnique(scrapyFeeds, extra) : mergeUnique(aiServiceFeeds, extra)).filter(isAllowed);
+
+    // Clear signal to client
+    res.write(`event: clear\n`);
+    res.write(`data: {"ok":0,"fail":0}\n\n`);
+
+    let ok = 0; let fail = 0; const start = Date.now();
+    const controller = new AbortController();
+    req.on('close', () => { try { controller.abort(); } catch {} });
+
+    for (const u of selected) {
+      const t0 = Date.now();
+      try {
+        const r = await axios.get(u, { timeout: 7000, maxRedirects: 3, validateStatus: ()=>true, headers: baseHeaders, httpAgent: undefined, httpsAgent: undefined });
+        const sample = { url: u, ok: r.status >= 200 && r.status < 400, status: r.status, durationMs: Date.now() - t0 };
+        if (sample.ok) ok++; else fail++;
+        res.write(`data: ${JSON.stringify(sample)}\n\n`);
+      } catch (e) {
+        const sample = { url: u, ok: false, error: e.code || e.message, durationMs: Date.now() - t0 };
+        fail++;
+        res.write(`data: ${JSON.stringify(sample)}\n\n`);
+      }
+    }
+    const durationMs = Date.now() - start;
+    res.write(`event: done\n`);
+    res.write(`data: ${JSON.stringify({ ok, fail, durationMs })}\n\n`);
+    res.end();
+  } catch (e) {
+    try {
+      res.write(`event: done\n`);
+      res.write(`data: ${JSON.stringify({ ok:0, fail:0, error: e.message })}\n\n`);
+    } catch {}
+    try { res.end(); } catch {}
   }
 });
 
@@ -673,7 +1020,32 @@ app.post('/api/scraping/use', async (req, res) => {
 app.get('/api/scraping/config', async (req, res) => {
   try {
     const intervalSec = parseInt(await db.getSetting('scrapping_interval_sec')) || 30;
-    res.json({ intervalSec });
+    // Advanced scraping options persisted in DB
+    const seleniumEnabled = ((await db.getSetting('selenium_enabled')) || '0') === '1';
+    let extraListingPages = [];
+    try { const raw = await db.getSetting('extra_listing_pages'); if (raw) extraListingPages = JSON.parse(raw); } catch {}
+    const maxPaginationPages = parseInt(await db.getSetting('max_pagination_pages')) || 10;
+    const cfg = {
+      intervalSec,
+      seleniumEnabled,
+      extraListingPages,
+      maxPaginationPages,
+      spiders: (process.env.SPIDERS || 'rss_news').split(',').map(s=>s.trim()).filter(Boolean),
+      rssSchedules: { fast: '*/2 min', main: '*/5 min', macro: '*/20 min' },
+      scrapy: {
+        DOWNLOAD_DELAY: parseFloat(process.env.SCRAPY_DOWNLOAD_DELAY || '1.5'),
+        CONCURRENT_REQUESTS: parseInt(process.env.SCRAPY_CONCURRENT_REQUESTS || '16'),
+        CONCURRENT_REQUESTS_PER_DOMAIN: parseInt(process.env.SCRAPY_CONCURRENT_REQUESTS_PER_DOMAIN || '2'),
+        AUTOTHROTTLE_ENABLED: (process.env.SCRAPY_AUTOTHROTTLE_ENABLED || 'true'),
+        AUTOTHROTTLE_START_DELAY: parseFloat(process.env.SCRAPY_AUTOTHROTTLE_START_DELAY || '1.0'),
+        AUTOTHROTTLE_MAX_DELAY: parseFloat(process.env.SCRAPY_AUTOTHROTTLE_MAX_DELAY || '15.0'),
+        AUTOTHROTTLE_TARGET_CONCURRENCY: parseFloat(process.env.SCRAPY_AUTOTHROTTLE_TARGET_CONCURRENCY || '1.0'),
+        DOWNLOAD_TIMEOUT: parseInt(process.env.SCRAPY_DOWNLOAD_TIMEOUT || '45'),
+        RETRY_ENABLED: (process.env.SCRAPY_RETRY_ENABLED || 'true'),
+        RETRY_TIMES: parseInt(process.env.SCRAPY_RETRY_TIMES || '3')
+      }
+    };
+    res.json(cfg);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -681,14 +1053,98 @@ app.get('/api/scraping/config', async (req, res) => {
 
 app.post('/api/scraping/config', async (req, res) => {
   try {
-    const { intervalSec } = req.body || {};
+    const { intervalSec, scrapy, seleniumEnabled, extraListingPages, maxPaginationPages } = req.body || {};
     const value = parseInt(intervalSec);
     if (!Number.isFinite(value) || value <= 0) {
       return res.status(400).json({ success: false, error: 'intervalSec must be a positive integer' });
     }
     await db.setSetting('scrapping_interval_sec', String(value));
-    // Immediate apply: scheduler reads from DB each tick, so new value is effective right away
-    res.json({ success: true, intervalSec: value });
+    // Persist Selenium + pagination settings
+    if (typeof seleniumEnabled === 'boolean') {
+      await db.setSetting('selenium_enabled', seleniumEnabled ? '1' : '0');
+      process.env.SELENIUM_ENABLED = seleniumEnabled ? '1' : '0';
+    }
+    if (extraListingPages !== undefined) {
+      try {
+        const asArray = Array.isArray(extraListingPages) ? extraListingPages : JSON.parse(String(extraListingPages || '[]'));
+        await db.setSetting('extra_listing_pages', JSON.stringify(asArray));
+        process.env.EXTRA_LISTING_PAGES = JSON.stringify(asArray);
+      } catch (e) {
+        // ignore parse errors; don't overwrite existing on bad input
+      }
+    }
+    if (maxPaginationPages !== undefined) {
+      const mpp = parseInt(maxPaginationPages);
+      if (Number.isFinite(mpp) && mpp > 0) {
+        await db.setSetting('max_pagination_pages', String(mpp));
+        process.env.MAX_PAGINATION_PAGES = String(mpp);
+      }
+    }
+    // Apply Scrapy env overrides (runtime) if present
+    if (scrapy && typeof scrapy === 'object') {
+      const map = {
+        DOWNLOAD_DELAY: 'SCRAPY_DOWNLOAD_DELAY',
+        CONCURRENT_REQUESTS: 'SCRAPY_CONCURRENT_REQUESTS',
+        CONCURRENT_REQUESTS_PER_DOMAIN: 'SCRAPY_CONCURRENT_REQUESTS_PER_DOMAIN',
+        AUTOTHROTTLE_ENABLED: 'SCRAPY_AUTOTHROTTLE_ENABLED',
+        AUTOTHROTTLE_START_DELAY: 'SCRAPY_AUTOTHROTTLE_START_DELAY',
+        AUTOTHROTTLE_MAX_DELAY: 'SCRAPY_AUTOTHROTTLE_MAX_DELAY',
+        AUTOTHROTTLE_TARGET_CONCURRENCY: 'SCRAPY_AUTOTHROTTLE_TARGET_CONCURRENCY',
+        DOWNLOAD_TIMEOUT: 'SCRAPY_DOWNLOAD_TIMEOUT',
+        RETRY_ENABLED: 'SCRAPY_RETRY_ENABLED',
+        RETRY_TIMES: 'SCRAPY_RETRY_TIMES',
+        RETRY_HTTP_CODES: 'SCRAPY_RETRY_HTTP_CODES'
+      };
+      Object.keys(map).forEach(k => {
+        if (scrapy[k] !== undefined && scrapy[k] !== null && scrapy[k] !== '') {
+          process.env[map[k]] = String(scrapy[k]);
+        }
+      });
+    }
+    res.json({ success: true, intervalSec: value, seleniumEnabled: ((await db.getSetting('selenium_enabled')) || '0') === '1', extraListingPages: (JSON.parse((await db.getSetting('extra_listing_pages')) || '[]')), maxPaginationPages: parseInt(await db.getSetting('max_pagination_pages')) || 10, scrapy: {
+      DOWNLOAD_DELAY: process.env.SCRAPY_DOWNLOAD_DELAY,
+      CONCURRENT_REQUESTS: process.env.SCRAPY_CONCURRENT_REQUESTS,
+      CONCURRENT_REQUESTS_PER_DOMAIN: process.env.SCRAPY_CONCURRENT_REQUESTS_PER_DOMAIN,
+      AUTOTHROTTLE_ENABLED: process.env.SCRAPY_AUTOTHROTTLE_ENABLED,
+      AUTOTHROTTLE_START_DELAY: process.env.SCRAPY_AUTOTHROTTLE_START_DELAY,
+      AUTOTHROTTLE_MAX_DELAY: process.env.SCRAPY_AUTOTHROTTLE_MAX_DELAY,
+      AUTOTHROTTLE_TARGET_CONCURRENCY: process.env.SCRAPY_AUTOTHROTTLE_TARGET_CONCURRENCY,
+      DOWNLOAD_TIMEOUT: process.env.SCRAPY_DOWNLOAD_TIMEOUT,
+      RETRY_ENABLED: process.env.SCRAPY_RETRY_ENABLED,
+      RETRY_TIMES: process.env.SCRAPY_RETRY_TIMES,
+      RETRY_HTTP_CODES: process.env.SCRAPY_RETRY_HTTP_CODES
+    }});
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Get/Set enabled spiders (persisted in DB)
+app.get('/api/scraping/spiders', async (req, res) => {
+  try {
+    let enabled = [];
+    try { const raw = await db.getSetting('enabled_spiders'); if (raw) enabled = JSON.parse(raw); } catch {}
+    const all = ['rss_news', 'html_news'];
+    res.json({ enabled: Array.isArray(enabled) && enabled.length ? enabled : ['rss_news'], all });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/scraping/spiders', async (req, res) => {
+  try {
+    const { enabled } = req.body || {};
+    if (!Array.isArray(enabled)) {
+      return res.status(400).json({ success: false, error: 'enabled[] required' });
+    }
+    const allowed = new Set(['rss_news', 'html_news']);
+    const filtered = Array.from(new Set(enabled.filter((s)=>allowed.has(String(s)))));
+    // Persist to DB and hint runtime via env
+    await db.setSetting('enabled_spiders', JSON.stringify(filtered));
+    process.env.SPIDERS = filtered.join(',');
+    // Broadcast optional event to clients
+    try { io.emit('spiders-changed', { enabled: filtered, ts: Date.now() }); } catch {}
+    res.json({ success: true, enabled: filtered });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -744,9 +1200,13 @@ app.get('/api/scraping/sources', async (req, res) => {
       const raw = await db.getSetting('rss_sources_extra');
       if (raw) extra = JSON.parse(raw);
     } catch {}
+    // Apply blacklist
+    let blacklist = [];
+    try { const raw = await db.getSetting('rss_sources_blacklist'); if (raw) blacklist = JSON.parse(raw); } catch {}
+    const isAllowed = (u) => !blacklist.includes(u);
     const mergeUnique = (arr1, arr2) => Array.from(new Set([...(arr1||[]), ...(arr2||[])]));
-    const aiMerged = mergeUnique(aiServiceFeeds, extra);
-    const scrapyMerged = mergeUnique(scrapyFeeds, extra);
+    const aiMerged = mergeUnique(aiServiceFeeds, extra).filter(isAllowed);
+    const scrapyMerged = mergeUnique(scrapyFeeds, extra).filter(isAllowed);
     res.json({ aiServiceFeeds: aiMerged, scrapyFeeds: scrapyMerged });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -834,6 +1294,23 @@ app.post('/api/scraping/sources/expand', async (req, res) => {
     const merged = Array.from(new Set([...(existing||[]), ...Array.from(discovered)]));
     await db.setSetting('rss_sources_extra', JSON.stringify(merged));
     return res.json({ success: true, added: merged.length - (existing||[]).length, total: merged.length });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Remove/bBlacklist problematic sources after a test run
+app.post('/api/scraping/sources/purge-errors', async (req, res) => {
+  try {
+    const { urls } = req.body || {};
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ success: false, error: 'urls[] required' });
+    }
+    let blacklist = [];
+    try { const raw = await db.getSetting('rss_sources_blacklist'); if (raw) blacklist = JSON.parse(raw); } catch {}
+    const next = Array.from(new Set([...(blacklist||[]), ...urls]));
+    await db.setSetting('rss_sources_blacklist', JSON.stringify(next));
+    res.json({ success: true, blacklisted: next.length, added: next.length - (blacklist||[]).length });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
